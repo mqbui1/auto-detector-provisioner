@@ -487,12 +487,20 @@ def discover_services(
                 logger.warning("MTS fallback failed for metric %s: %s", apm_metric, e)
         logger.info("Discovery: MTS fallback found %d services", len(apm_services))
 
+    # Synthetic/load-test services — skip entirely, no detectors needed
+    _SYNTHETIC_NAMES = {"load-generator", "load_generator", "loadgenerator",
+                        "locust", "k6", "gatling", "jmeter", "synthetic"}
+
     profiles = []
     for svc_info in apm_services:
         svc_name = svc_info.get("name") or svc_info.get("service") or ""
         svc_env = svc_info.get("environment") or environment or ""
 
         if not svc_name:
+            continue
+
+        if any(p in svc_name.lower() for p in _SYNTHETIC_NAMES):
+            logger.info("Discovery: skipping synthetic service: %s", svc_name)
             continue
 
         svc_key = f"{svc_env}/{svc_name}"

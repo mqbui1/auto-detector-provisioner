@@ -10,7 +10,6 @@ from typing import Any
 
 from templates import TEMPLATE_REGISTRY
 from templates.apm import APMTemplates, DetectorTemplate
-from templates.http_patterns import HTTPPatternsTemplates
 from .discovery import ServiceProfile
 from .baseline_learner import ServiceBaseline
 from .metric_filter import (
@@ -60,27 +59,6 @@ def generate_detectors(
     # APM detectors always apply
     logger.info("Generator: adding APM detectors for %s/%s", environment, service)
     _add(APMTemplates.templates(service, environment, baseline))
-
-    # HTTP pattern detectors (429, 401, 403, 502/503/504) only apply to services
-    # that actually serve HTTP traffic. Skip for pure gRPC services with no HTTP stack.
-    http_stacks = {"nodejs", "python", "jvm", "dotnet", "rust", "ruby"}
-    http_frameworks = {"spring_boot", "django", "flask", "fastapi", "express", "nextjs",
-                       "aspnetcore", "rails", "gin", "fiber"}
-    non_http_frameworks = {"grpc", "graphql"}
-    non_http_libs = {"istio", "kafka", "rabbitmq", "celery"}
-    is_http_service = (
-        bool(all_stacks & http_stacks)
-        or bool(all_frameworks & http_frameworks)
-        or (
-            # Unknown stack with no known non-HTTP framework/lib — apply defensively
-            not all_stacks
-            and not (all_frameworks & http_frameworks)
-            and not (all_frameworks & non_http_frameworks)
-            and not (set(profile.libraries) & non_http_libs)
-        )
-    )
-    if is_http_service:
-        _add(HTTPPatternsTemplates.templates(service, environment, baseline))
 
     # Library techs that require direct span evidence (db.system / messaging.system)
     # to avoid false positives from shared infra metrics

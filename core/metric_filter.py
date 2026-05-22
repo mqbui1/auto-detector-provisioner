@@ -41,13 +41,10 @@ def probe_existing_metrics(
     if not candidate_metrics:
         return set()
 
-    # Build query: sf_service filter + metric name OR
     filters = [f'sf_service:"{service}"']
     if environment:
         filters.append(f'sf_environment:"{environment}"')
 
-    # MTS catalog supports OR via multiple sf_metric clauses — use one query per
-    # batch of 20 metrics (URL length limit)
     existing: set[str] = set()
     metrics_list = sorted(candidate_metrics)
 
@@ -70,13 +67,50 @@ def probe_existing_metrics(
                     existing.add(metric)
         except Exception as e:
             logger.warning("metric_filter: probe failed for %s batch: %s", service, e)
-            # On failure, assume all metrics in this batch exist (don't filter)
             existing.update(batch)
 
     logger.debug("metric_filter: %s/%s — %d/%d metrics exist: %s",
                  environment, service, len(existing), len(candidate_metrics),
                  sorted(existing)[:10])
     return existing
+
+
+def probe_http_status_codes_exist(
+    api_base: str,
+    token: str,
+    service: str,
+    environment: str | None,
+) -> bool:
+    """
+    Check whether service.request.count has an http.status_code dimension
+    for this service — i.e. whether the service actually emits HTTP status
+    codes. gRPC-only services emit service.request.count but without
+    http.status_code, so HTTP pattern detectors should be dropped for them.
+
+    Strategy: query MTS for service.request.count and inspect the dimensions
+    of the returned MTS entries for the presence of http.status_code.
+    """
+    filters = [f'sf_service:"{service}"', 'sf_metric:"service.request.count"']
+    if environment:
+        filters.append(f'sf_environment:"{environment}"')
+    query = " AND ".join(filters)
+
+    try:
+        qs = urllib.parse.urlencode({"query": query, "limit": 20})
+        url = f"{api_base}/v2/metrictimeseries?{qs}"
+        req = urllib.request.Request(
+            url, headers={"X-SF-Token": token, "Accept": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        for mts in (data.get("results") or []):
+            dims = mts.get("dimensions") or {}
+            if "http.status_code" in dims or "http.response.status_code" in dims:
+                return True
+        return False
+    except Exception as e:
+        logger.warning("metric_filter: http status code probe failed for %s: %s", service, e)
+        return True  # fail open — keep HTTP detectors on error
 
 
 def filter_detectors_by_metric_existence(
