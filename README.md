@@ -26,10 +26,20 @@ Automatically discovers services in Splunk Observability Cloud, detects their te
 | **gRPC** | RPC error rate, server latency, deadline exceeded, UNAVAILABLE errors, client cancellations, client error rate |
 | **GraphQL** | Resolver error rate, query latency, mutation error rate, query depth/complexity abuse, N+1 pattern |
 | **Kafka** | Consumer lag, lag growth, rebalance rate, producer errors, DLQ depth |
+| **RabbitMQ** | Queue depth, unacked messages, consumer count drop, memory/disk alarms, channel errors |
+| **Celery** | Task failure rate, queue depth, worker count, execution duration, retry rate, timeouts |
 | **Redis** | Cache hit rate, eviction rate, connection count, latency, memory % |
 | **Database** | Query latency, connection pool saturation, deadlocks, N+1 detection |
+| **Elasticsearch** | Cluster health, unassigned shards, JVM heap, search/index latency, thread pool rejections |
+| **Cassandra** | Read/write latency, dropped mutations, compaction backlog, JVM heap, hinted handoff |
 | **Kubernetes** | Pod restarts, OOMKilled, CPU throttling, HPA at max, pending pods, desired vs running |
+| **Nginx** | Upstream 5xx rate, worker saturation, upstream latency, request rate drop, 4xx spike |
+| **Istio/Envoy** | Sidecar error rate, circuit breaker open, upstream cx failures, mTLS failures, retry budget |
+| **Host/Linux** | CPU utilization, CPU steal, memory pressure, disk I/O saturation, network loss, file descriptors |
 | **AWS** | Lambda errors/throttles/cold starts, RDS connections/replica lag, SQS age/DLQ, ECS task count |
+| **HTTP patterns** | 429 rate limiting, 401/403 auth failures, 502/503/504 gateway errors (all HTTP services) |
+| **Batch/Cron** | Job failures, duration anomaly, missed schedule |
+| **Observability** | OTel span export errors, metric reporting gaps, sampler drop rate |
 
 ## Threshold types
 
@@ -153,9 +163,17 @@ templates/
     ├── express.py    — HTTP 5xx, latency, promise rejections, middleware timeouts
     ├── grpc.py       — RPC error rate, latency, deadline exceeded, UNAVAILABLE
     ├── graphql.py    — resolver errors, query latency, mutations, N+1, complexity
-    ├── kafka.py      — consumer lag, producer errors, DLQ
-    ├── redis.py      — hit rate, evictions, connections, latency
-    ├── database.py   — PostgreSQL, MySQL, MongoDB, N+1 detection
-    ├── kubernetes.py — pod restarts, OOMKilled, HPA, CPU throttling
-    └── aws.py        — Lambda, RDS, SQS, ECS
+    ├── kafka.py          — consumer lag, producer errors, DLQ
+    ├── rabbitmq.py       — queue depth, unacked, consumer drop, alarms
+    ├── celery.py         — task failures, queue depth, worker count, duration
+    ├── redis.py          — hit rate, evictions, connections, latency
+    ├── database.py       — PostgreSQL, MySQL, MongoDB, N+1 detection
+    ├── elasticsearch.py  — cluster health, shards, JVM heap, latency, rejections
+    ├── cassandra.py      — read/write latency, compaction, dropped mutations
+    ├── kubernetes.py     — pod restarts, OOMKilled, HPA, CPU throttling
+    ├── nginx.py          — upstream errors, worker saturation, latency, request drop
+    ├── istio.py          — sidecar errors, circuit breaker, mTLS, retry budget
+    ├── host.py           — CPU, memory, disk I/O, network, file descriptors
+    ├── aws.py            — Lambda, RDS, SQS, ECS
+    └── http_patterns.py  — 429/401/403/5xx patterns, batch jobs, observability quality
 ```

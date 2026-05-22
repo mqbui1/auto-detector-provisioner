@@ -30,6 +30,11 @@ METRIC_FINGERPRINTS: dict[str, list[str]] = {
     "mongodb":      ["mongodb."],
     "rabbitmq":     ["rabbitmq."],
     "celery":       ["celery."],
+    "elasticsearch": ["elasticsearch."],
+    "cassandra":    ["cassandra."],
+    "nginx":        ["nginx."],
+    "istio":        ["istio_", "envoy_"],
+    "host":         ["cpu.utilization", "cpu.steal", "disk.io", "disk.summary", "memory.utilization", "network."],
     "aws_ec2":      ["cpu.utilization", "disk.io", "network."],
     "aws_rds":      ["aws.rds."],
     "aws_lambda":   ["aws.lambda."],
@@ -328,7 +333,7 @@ def _build_profile(
     frameworks = {"spring_boot", "django", "flask", "fastapi", "express", "rails", "aspnetcore", "gin", "fiber"}
     libraries = {"kafka", "redis", "postgresql", "mysql", "mongodb", "rabbitmq", "celery",
                  "aws_ec2", "aws_rds", "aws_lambda", "aws_ecs", "aws_sqs", "kubernetes",
-                 "grpc", "elasticsearch", "cassandra", "dynamodb"}
+                 "grpc", "elasticsearch", "cassandra", "dynamodb", "nginx", "istio", "host"}
 
     for key in all_keys:
         if key in stacks:

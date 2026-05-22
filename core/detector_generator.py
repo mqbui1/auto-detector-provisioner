@@ -10,6 +10,7 @@ from typing import Any
 
 from templates import TEMPLATE_REGISTRY
 from templates.apm import APMTemplates, DetectorTemplate
+from templates.http_patterns import HTTPPatternsTemplates, ObservabilityQualityTemplates
 from .discovery import ServiceProfile
 from .baseline_learner import ServiceBaseline
 
@@ -47,6 +48,12 @@ def generate_detectors(
     # APM detectors always apply
     logger.info("Generator: adding APM detectors for %s/%s", environment, service)
     _add(APMTemplates.templates(service, environment, baseline))
+
+    # Cross-cutting HTTP pattern detectors always apply (429, 401, 403, gateway errors)
+    _add(HTTPPatternsTemplates.templates(service, environment, baseline))
+
+    # Observability quality detectors always apply
+    _add(ObservabilityQualityTemplates.templates(service, environment, baseline))
 
     # Stack/framework/library detectors
     all_detected = profile.all_detected()
