@@ -7,13 +7,30 @@ from .database import DatabaseTemplates
 from .aws import AWSTemplates
 from .dotnet import DotNetTemplates
 from .nodejs import NodeJSTemplates
+from .spring_boot import SpringBootTemplates
+from .django import DjangoTemplates
+from .flask import FlaskTemplates
+from .fastapi import FastAPITemplates
+from .express import ExpressTemplates
+from .grpc import GRPCTemplates
+from .graphql import GraphQLTemplates
 
 # Registry: detected technology → template class
 TEMPLATE_REGISTRY: dict[str, type] = {
+    # Stacks
     "jvm":          JVMTemplates,
-    "spring_boot":  JVMTemplates,
     "dotnet":       DotNetTemplates,
     "nodejs":       NodeJSTemplates,
+    # Frameworks — now fully covered
+    "spring_boot":  SpringBootTemplates,
+    "spring":       SpringBootTemplates,
+    "django":       DjangoTemplates,
+    "flask":        FlaskTemplates,
+    "fastapi":      FastAPITemplates,
+    "express":      ExpressTemplates,
+    "grpc":         GRPCTemplates,
+    "graphql":      GraphQLTemplates,
+    # Libraries
     "kafka":        KafkaTemplates,
     "redis":        RedisTemplates,
     "postgresql":   DatabaseTemplates,
