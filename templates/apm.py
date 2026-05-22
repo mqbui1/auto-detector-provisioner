@@ -16,6 +16,11 @@ class DetectorTemplate:
     threshold_type: str    # dynamic, fixed, hybrid
     confidence: str        # high, medium, low
     tags: list[str] = field(default_factory=list)
+    # Metric names this detector requires. If none of these exist for the service,
+    # the detector is skipped. Empty = always create (e.g. APM span-based detectors).
+    required_metrics: list[str] = field(default_factory=list)
+    # Human-readable rationale: why this detector exists + where thresholds come from
+    rationale: str = ""
 
 
 class APMTemplates:
@@ -58,6 +63,17 @@ detect(when(A > {warn_thresh}) and when(A <= {anomaly_thresh}), lasting="5m").pu
             threshold_type=threshold_type,
             confidence=confidence,
             tags=["apm", "latency"],
+            rationale=(
+                "p99 latency is the standard SLI for user-facing latency per Google SRE Book §6. "
+                "p99 catches tail latency that p50/p95 miss — the worst 1% of requests often indicates "
+                "resource contention, GC pauses, or downstream timeouts. "
+                + (f"Thresholds set at mean+2σ (warn) / mean+3σ (critical) from {baseline.sample_count} "
+                   f"sampled requests over the baseline window — statistically significant deviation. "
+                   f"Tune by adjusting the σ multiplier if you see too many false positives."
+                   if threshold_type == "dynamic" else
+                   "Fixed thresholds (1s warn / 3s critical) from Splunk APM best practices. "
+                   "Tune once baseline data is available (re-run with --baseline-window-hours 24).")
+            ),
         ))
 
         # ── Error rate ────────────────────────────────────────────────────────
@@ -91,6 +107,17 @@ detect(when(error_rate > {warn_thresh_err}) and when(error_rate <= {anomaly_thre
             threshold_type=err_threshold_type,
             confidence=err_confidence,
             tags=["apm", "error_rate"],
+            rationale=(
+                "Error rate is a core SLI per Google SRE Book §6 and the four golden signals "
+                "(latency, traffic, errors, saturation). Splunk APM marks spans with sf_error=true "
+                "for any HTTP 5xx or exception. "
+                + (f"Thresholds set at 2× (warn) / 4× (critical) the observed baseline error rate "
+                   f"of {baseline.error_rate_pct:.2f}%, giving headroom for normal variance. "
+                   f"Tune the multipliers if your service has bursty but acceptable errors."
+                   if err_threshold_type == "dynamic" else
+                   "Fixed thresholds (1% warn / 5% critical) from Splunk APM best practices and "
+                   "the SRE workbook availability targets. Tune once you know your error budget.")
+            ),
         ))
 
         # ── Request rate drop ─────────────────────────────────────────────────
@@ -122,6 +149,14 @@ detect(when(A is None), lasting="10m").publish("Critical")
             threshold_type="fixed",
             confidence="high",
             tags=["apm", "availability"],
+            rationale=(
+                "Detects complete absence of trace data — the most critical signal before any "
+                "other alert can fire. A service emitting zero spans means either it crashed, "
+                "was undeployed, or the OTel collector pipeline broke. "
+                "Source: Splunk APM 'no-data' alerting pattern. The 10-minute window avoids "
+                "false positives during rolling restarts. Tune the window if your deployments "
+                "take longer than 10 minutes."
+            ),
         ))
 
         return detectors

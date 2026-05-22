@@ -164,11 +164,24 @@ def format_dry_run_report(
             conf_icon = {"high": "✓", "medium": "~", "low": "?"}.get(d.confidence, "?")
             thresh_icon = {"dynamic": "📈", "fixed": "📏", "hybrid": "🔀"}.get(d.threshold_type, "")
             lines.append(f"    {conf_icon} {thresh_icon} [{d.severity}] {d.name}")
-            lines.append(f"       {d.description}")
+            lines.append(f"       Signal:  {d.description}")
+            if d.rationale:
+                # Wrap rationale at 80 chars with consistent indent
+                import textwrap
+                wrapped = textwrap.fill(d.rationale, width=80,
+                                        initial_indent="       Rationale: ",
+                                        subsequent_indent="                  ")
+                lines.append(wrapped)
 
     lines.append("\nLEGEND:")
-    lines.append("  Confidence: ✓ high  ~ medium  ? low")
-    lines.append("  Threshold:  📈 dynamic (baseline-tuned)  📏 fixed (best practice)  🔀 hybrid")
+    lines.append("  Confidence: ✓ high  (metric exists + sufficient baseline data)")
+    lines.append("              ~ medium (metric exists, baseline thin or absent)")
+    lines.append("  Threshold:  📈 dynamic  — computed from your observed traffic baseline")
+    lines.append("              📏 fixed    — Google SRE Book / OTel semantic conventions defaults")
+    lines.append("  Sources:    Google SRE Book §6 (SLIs/SLOs/error budgets),")
+    lines.append("              OpenTelemetry Semantic Conventions v1.24,")
+    lines.append("              Splunk APM Detector Best Practices,")
+    lines.append("              Python/CPython runtime instrumentation docs.")
     lines.append("")
 
     return "\n".join(lines)
