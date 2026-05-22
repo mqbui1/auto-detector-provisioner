@@ -162,6 +162,8 @@ class WatchDaemon:
             profile=profile,
             baseline=baseline,
             include_low_confidence=cfg.include_low_confidence,
+            realm=cfg.realm,
+            token=cfg.token,
         )
 
         # Deploy

@@ -301,11 +301,13 @@ def main() -> int:
                 print(f"  Baseline: insufficient samples — using fixed thresholds", file=sys.stderr)
                 baseline = None
 
-        # Generate
+        # Generate (with metric existence probe to drop ghost detectors)
         detectors = generate_detectors(
             profile=profile,
             baseline=baseline,
             include_low_confidence=args.include_low_confidence,
+            realm=args.realm,
+            token=args.token,
         )
         print(format_dry_run_report(profile, detectors, baseline))
 

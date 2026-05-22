@@ -13,6 +13,11 @@ from templates.apm import APMTemplates, DetectorTemplate
 from templates.http_patterns import HTTPPatternsTemplates, ObservabilityQualityTemplates
 from .discovery import ServiceProfile
 from .baseline_learner import ServiceBaseline
+from .metric_filter import (
+    extract_metrics_from_signalflow,
+    probe_existing_metrics,
+    filter_detectors_by_metric_existence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +30,9 @@ def generate_detectors(
     profile: ServiceProfile,
     baseline: ServiceBaseline | None = None,
     include_low_confidence: bool = False,
+    realm: str = "",
+    token: str = "",
+    skip_metric_probe: bool = False,
 ) -> list[DetectorTemplate]:
     """
     Generate detector templates for a service based on its detected
@@ -111,6 +119,25 @@ def generate_detectors(
                 _add(template_cls.templates(service, environment, baseline))
         except Exception as e:
             logger.warning("Generator: failed to generate %s templates: %s", tech, e)
+
+    # Metric existence probe — drop detectors whose metrics have no data for this service
+    if realm and token and not skip_metric_probe:
+        api_base = f"https://api.{realm}.signalfx.com"
+        # Collect all candidate metrics from all generated detectors
+        all_candidates: set[str] = set()
+        for det in detectors:
+            all_candidates.update(extract_metrics_from_signalflow(det.signalflow))
+
+        if all_candidates:
+            existing = probe_existing_metrics(
+                api_base, token, service, environment, all_candidates
+            )
+            before = len(detectors)
+            detectors = filter_detectors_by_metric_existence(detectors, existing)
+            dropped = before - len(detectors)
+            if dropped:
+                logger.info("Generator: metric probe dropped %d detectors with no data for %s/%s",
+                            dropped, environment, service)
 
     logger.info("Generator: %d detectors generated for %s/%s", len(detectors), environment, service)
     return detectors
