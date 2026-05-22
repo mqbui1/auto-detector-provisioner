@@ -10,17 +10,26 @@ Usage:
   # Dry run — show what detectors would be created
   python3 provision.py --realm us1 --token $TOKEN --environment production
 
-  # Scope to a specific service
-  python3 provision.py --realm us1 --token $TOKEN --environment production --service my-service
-
   # Auto-deploy detectors
   python3 provision.py --realm us1 --token $TOKEN --environment production --auto-deploy
 
-  # Include low-confidence detectors in dry run
-  python3 provision.py --realm us1 --token $TOKEN --environment production --include-low-confidence
+  # Continuous watch mode — auto-provision new services, retune on drift
+  python3 provision.py --realm us1 --token $TOKEN --environment production --watch
 
-  # Skip baseline learning (use fixed thresholds only)
-  python3 provision.py --realm us1 --token $TOKEN --environment production --skip-baseline
+  # Retune existing detectors based on updated baseline
+  python3 provision.py --realm us1 --token $TOKEN --environment production --retune
+
+  # Mute a service during deployment
+  python3 provision.py --realm us1 --token $TOKEN --environment production --service my-svc --mute 30
+
+  # Unmute a service
+  python3 provision.py --realm us1 --token $TOKEN --environment production --service my-svc --unmute
+
+  # Archive a decommissioned service (delete its detectors)
+  python3 provision.py --realm us1 --token $TOKEN --environment production --service my-svc --archive
+
+  # Scan for stale services and archive them
+  python3 provision.py --realm us1 --token $TOKEN --environment production --archive-stale
 """
 from __future__ import annotations
 
@@ -28,12 +37,18 @@ import argparse
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 from core.discovery import discover_services
 from core.baseline_learner import learn_baseline, load_baseline
 from core.detector_generator import generate_detectors, format_dry_run_report
 from core.detector_deployer import deploy_detectors, format_deploy_summary
+from core.state import ProvisionerState, DetectorRecord, STATE_FILE
+from core.retune import retune_service, baseline_hash, signalflow_hash, format_retune_summary
+from core.mute import mute_service, unmute_service, list_active_mutes, format_mute_list
+from core.archive import archive_service, archive_stale_services, format_archive_summary
+from core.watch import WatchDaemon, WatchConfig
 
 
 def parse_args() -> argparse.Namespace:
@@ -65,6 +80,36 @@ def parse_args() -> argparse.Namespace:
                         help="Deploy detectors automatically (default: dry run only)")
     deploy.add_argument("--include-low-confidence", action="store_true",
                         help="Include low-confidence detectors (heuristic-based)")
+    deploy.add_argument("--state-file", type=Path, default=STATE_FILE,
+                        help="Path to provisioner state file (default: data/provisioned_state.json)")
+    deploy.add_argument("--force-reprovision", action="store_true",
+                        help="Re-provision even if service is already in state")
+
+    lifecycle = parser.add_argument_group("lifecycle")
+    lifecycle.add_argument("--retune", action="store_true",
+                           help="Retune existing detectors based on updated baseline")
+    lifecycle.add_argument("--mute", type=int, metavar="MINUTES",
+                           help="Mute detectors for SERVICE for N minutes")
+    lifecycle.add_argument("--unmute", action="store_true",
+                           help="Remove muting rules for SERVICE")
+    lifecycle.add_argument("--list-mutes", action="store_true",
+                           help="List all active muting rules")
+    lifecycle.add_argument("--archive", action="store_true",
+                           help="Archive SERVICE — delete its detectors and mark decommissioned")
+    lifecycle.add_argument("--archive-stale", action="store_true",
+                           help="Scan for services not seen in --stale-days and archive them")
+    lifecycle.add_argument("--stale-days", type=float, default=7.0, metavar="N",
+                           help="Days of inactivity before a service is considered stale (default: 7)")
+
+    watch = parser.add_argument_group("watch mode")
+    watch.add_argument("--watch", action="store_true",
+                       help="Run continuously — auto-provision new services and retune on drift")
+    watch.add_argument("--poll-interval", type=int, default=60, metavar="MINUTES",
+                       help="Polling interval in watch mode (default: 60m)")
+    watch.add_argument("--retune-interval-days", type=float, default=7.0,
+                       help="Days between forced retune in watch mode (default: 7)")
+    watch.add_argument("--auto-archive", action="store_true",
+                       help="Automatically archive stale services in watch mode")
 
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
 
@@ -83,16 +128,97 @@ def main() -> int:
         print("ERROR: --token is required (or set SPLUNK_ACCESS_TOKEN)", file=sys.stderr)
         return 1
 
+    state = ProvisionerState(args.state_file)
     dry_run = not args.auto_deploy
+
+    # ── Lifecycle commands (don't provision) ─────────────────────────────────
+
+    if args.list_mutes:
+        windows = list_active_mutes(args.realm, args.token, args.environment)
+        print(format_mute_list(windows))
+        return 0
+
+    if args.mute is not None:
+        if not args.service:
+            print("ERROR: --mute requires --service", file=sys.stderr)
+            return 1
+        window = mute_service(
+            realm=args.realm, token=args.token,
+            service=args.service, environment=args.environment or "",
+            duration_minutes=args.mute,
+            reason="manual mute via CLI",
+            state=state, dry_run=dry_run,
+        )
+        if window:
+            print(f"Muted {args.service} for {args.mute}m (rule id: {window.rule_id})")
+        return 0 if window else 1
+
+    if args.unmute:
+        if not args.service:
+            print("ERROR: --unmute requires --service", file=sys.stderr)
+            return 1
+        ok = unmute_service(
+            realm=args.realm, token=args.token,
+            service=args.service, environment=args.environment or "",
+            state=state,
+        )
+        print(f"{'Unmuted' if ok else 'No active mute rules found for'} {args.service}")
+        return 0
+
+    if args.archive:
+        if not args.service:
+            print("ERROR: --archive requires --service", file=sys.stderr)
+            return 1
+        result = archive_service(
+            realm=args.realm, token=args.token,
+            service=args.service, environment=args.environment or "",
+            state=state, dry_run=dry_run,
+        )
+        print(format_archive_summary([result], dry_run))
+        return 0 if result.action in ("archived", "skipped") else 1
+
+    if args.archive_stale:
+        results = archive_stale_services(
+            realm=args.realm, token=args.token,
+            state=state, stale_days=args.stale_days, dry_run=dry_run,
+        )
+        print(format_archive_summary(results, dry_run))
+        return 0
+
+    # ── Watch mode ────────────────────────────────────────────────────────────
+
+    if args.watch:
+        config = WatchConfig(
+            realm=args.realm,
+            token=args.token,
+            environment=args.environment,
+            poll_interval_minutes=args.poll_interval,
+            retune_interval_days=args.retune_interval_days,
+            stale_threshold_days=args.stale_days,
+            baseline_window_hours=args.baseline_window_hours,
+            baseline_dir=args.baseline_dir,
+            state_path=args.state_file,
+            auto_archive=args.auto_archive,
+            dry_run=dry_run,
+            include_low_confidence=args.include_low_confidence,
+        )
+        daemon = WatchDaemon(config)
+        daemon.run()
+        return 0
+
+    # ── Standard provision / retune flow ─────────────────────────────────────
+
     mode = "DRY RUN" if dry_run else "AUTO-DEPLOY"
+    if args.retune:
+        mode = f"RETUNE ({'DRY RUN' if dry_run else 'LIVE'})"
 
     print(f"\n{'='*60}", file=sys.stderr)
     print(f"Auto-Detector Provisioner  [{mode}]", file=sys.stderr)
     print(f"Realm: {args.realm}  Env: {args.environment or 'all'}  Service: {args.service or 'all'}", file=sys.stderr)
     print(f"{'='*60}\n", file=sys.stderr)
 
-    # ── Step 1: Discover services ────────────────────────────────────────────
-    print("Step 1: Discovering services and detecting tech stack...", file=sys.stderr)
+    # Discover services
+    print("Discovering services and detecting tech stack...", file=sys.stderr)
     profiles = discover_services(
         realm=args.realm,
         token=args.token,
@@ -108,80 +234,127 @@ def main() -> int:
 
     print(f"  Found {len(profiles)} service(s)\n", file=sys.stderr)
 
-    total_deployed = 0
+    total_actioned = 0
     total_failed = 0
 
     for profile in profiles:
         print(f"\nProcessing: {profile.service} (env={profile.environment})", file=sys.stderr)
-        if profile.stacks or profile.frameworks or profile.libraries:
-            detected = profile.stacks + profile.frameworks + profile.libraries
+        detected = profile.stacks + profile.frameworks + profile.libraries
+        if detected:
             print(f"  Detected: {', '.join(detected)}", file=sys.stderr)
         else:
-            print("  Detected: APM only (no specific stack/library identified)", file=sys.stderr)
+            print("  Detected: APM only", file=sys.stderr)
 
-        # ── Step 2: Learn baseline ───────────────────────────────────────────
+        # ── Retune mode ───────────────────────────────────────────────────────
+        if args.retune:
+            if not state.is_provisioned(profile.service, profile.environment):
+                print(f"  Skipping retune — {profile.service} not provisioned yet", file=sys.stderr)
+                continue
+
+            svc_state = state.get(profile.service, profile.environment)
+            if svc_state and svc_state.is_muted():
+                print(f"  Skipping retune — {profile.service} is currently muted", file=sys.stderr)
+                continue
+
+            baseline = learn_baseline(
+                realm=args.realm, token=args.token,
+                service=profile.service, environment=profile.environment,
+                window_hours=args.baseline_window_hours,
+                output_dir=args.baseline_dir,
+            )
+
+            results = retune_service(
+                realm=args.realm, token=args.token,
+                service=profile.service, environment=profile.environment,
+                new_baseline=baseline, state=state, dry_run=dry_run,
+            )
+            print(format_retune_summary(results, dry_run))
+            total_actioned += sum(1 for r in results if r.action == "updated")
+            total_failed += sum(1 for r in results if r.action == "failed")
+            continue
+
+        # ── Provision mode ────────────────────────────────────────────────────
+        if state.is_provisioned(profile.service, profile.environment) and not args.force_reprovision:
+            print(f"  Already provisioned — skipping (use --force-reprovision to override)", file=sys.stderr)
+            continue
+
+        # Learn baseline
         baseline = None
         if not args.skip_baseline:
             print("  Learning baseline...", file=sys.stderr)
-
-            # Check for cached baseline
             baseline_path = args.baseline_dir / f"{profile.environment}__{profile.service}.json"
             baseline = load_baseline(baseline_path)
-
             if baseline:
-                print(f"  Using cached baseline (learned {baseline.window_hours}h window)", file=sys.stderr)
+                print(f"  Using cached baseline ({baseline.window_hours}h window)", file=sys.stderr)
             else:
                 baseline = learn_baseline(
-                    realm=args.realm,
-                    token=args.token,
-                    service=profile.service,
-                    environment=profile.environment,
+                    realm=args.realm, token=args.token,
+                    service=profile.service, environment=profile.environment,
                     window_hours=args.baseline_window_hours,
                     output_dir=args.baseline_dir,
                 )
-
             if baseline.is_reliable():
                 print(f"  Baseline: latency={baseline.latency_mean_ms:.1f}ms "
                       f"error_rate={baseline.error_rate_pct:.2f}% "
                       f"samples={baseline.sample_count}", file=sys.stderr)
             else:
-                print(f"  Baseline: insufficient samples ({baseline.sample_count}) — using fixed thresholds", file=sys.stderr)
+                print(f"  Baseline: insufficient samples — using fixed thresholds", file=sys.stderr)
                 baseline = None
 
-        # ── Step 3: Generate detectors ───────────────────────────────────────
+        # Generate
         detectors = generate_detectors(
             profile=profile,
             baseline=baseline,
             include_low_confidence=args.include_low_confidence,
         )
+        print(format_dry_run_report(profile, detectors, baseline))
 
-        # Print dry run report
-        report = format_dry_run_report(profile, detectors, baseline)
-        print(report)
-
-        # ── Step 4: Deploy ───────────────────────────────────────────────────
+        # Deploy
         results = deploy_detectors(
-            realm=args.realm,
-            token=args.token,
-            service=profile.service,
-            environment=profile.environment,
-            detectors=detectors,
-            dry_run=dry_run,
+            realm=args.realm, token=args.token,
+            service=profile.service, environment=profile.environment,
+            detectors=detectors, dry_run=dry_run,
         )
+        print(format_deploy_summary(results, dry_run))
 
-        summary = format_deploy_summary(results, dry_run)
-        print(summary)
+        # Record in state
+        b_hash = baseline_hash(baseline) if baseline else "no-baseline"
+        records = [
+            DetectorRecord(
+                detector_id=r.detector_id or "dry-run",
+                detector_name=r.detector_name,
+                provisioned_at=time.time(),
+                signalflow_hash=signalflow_hash(
+                    next((d.signalflow for d in detectors if d.name == r.detector_name), "")
+                ),
+                threshold_type=next(
+                    (d.threshold_type for d in detectors if d.name == r.detector_name), "fixed"
+                ),
+                tags=next((d.tags for d in detectors if d.name == r.detector_name), []),
+            )
+            for r in results if r.success
+        ]
+        if not dry_run or args.force_reprovision:
+            state.record_provision(
+                service=profile.service,
+                environment=profile.environment,
+                baseline_hash=b_hash,
+                detector_records=records,
+            )
 
-        total_deployed += sum(1 for r in results if r.success)
+        total_actioned += sum(1 for r in results if r.success)
         total_failed += sum(1 for r in results if not r.success)
 
-    # ── Final summary ────────────────────────────────────────────────────────
+    # ── Final summary ─────────────────────────────────────────────────────────
     print(f"\n{'='*60}", file=sys.stderr)
-    action = "Would create" if dry_run else "Created"
-    print(f"{action} {total_deployed} detectors across {len(profiles)} service(s)", file=sys.stderr)
+    if args.retune:
+        print(f"Retuned {total_actioned} detectors across {len(profiles)} service(s)", file=sys.stderr)
+    else:
+        action = "Would create" if dry_run else "Created"
+        print(f"{action} {total_actioned} detectors across {len(profiles)} service(s)", file=sys.stderr)
     if total_failed:
         print(f"Failed: {total_failed}", file=sys.stderr)
-    if dry_run:
+    if dry_run and not args.retune:
         print("\nRun with --auto-deploy to create these detectors.", file=sys.stderr)
     print(f"{'='*60}\n", file=sys.stderr)
 

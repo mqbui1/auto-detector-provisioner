@@ -83,6 +83,40 @@ python3 provision.py --realm us1 --token $TOKEN --environment production --inclu
 python3 provision.py --realm us1 --token $TOKEN --environment production --baseline-window-hours 6
 ```
 
+## Lifecycle management
+
+```bash
+# Retune thresholds based on updated baseline (dry-run)
+python3 provision.py --realm us1 --token $TOKEN --environment production --retune
+
+# Retune and apply changes
+python3 provision.py --realm us1 --token $TOKEN --environment production --retune --auto-deploy
+
+# Mute a service during a 30-minute deployment window
+python3 provision.py --realm us1 --token $TOKEN --environment production --service payment-service --mute 30
+
+# Unmute a service
+python3 provision.py --realm us1 --token $TOKEN --environment production --service payment-service --unmute
+
+# List all active muting rules
+python3 provision.py --realm us1 --token $TOKEN --environment production --list-mutes
+
+# Archive a decommissioned service (dry-run — shows what would be deleted)
+python3 provision.py --realm us1 --token $TOKEN --environment production --service old-service --archive
+
+# Archive and delete detectors
+python3 provision.py --realm us1 --token $TOKEN --environment production --service old-service --archive --auto-deploy
+
+# Scan for stale services (not seen in 7 days) and archive them
+python3 provision.py --realm us1 --token $TOKEN --environment production --archive-stale --auto-deploy
+
+# Continuous watch mode — auto-provision new services, retune on drift
+python3 provision.py --realm us1 --token $TOKEN --environment production --watch --poll-interval 60
+
+# Watch mode with auto-archival of stale services
+python3 provision.py --realm us1 --token $TOKEN --environment production --watch --auto-archive --auto-deploy
+```
+
 ## Example output
 
 ```
@@ -146,10 +180,15 @@ Run with --auto-deploy to create these detectors.
 ```
 provision.py (CLI entry point)
     │
-    ├── core/discovery.py        — service discovery + stack/library detection
-    ├── core/baseline_learner.py — SignalFlow-based baseline computation
+    ├── core/discovery.py          — service discovery + stack/library detection
+    ├── core/baseline_learner.py   — SignalFlow-based baseline computation
     ├── core/detector_generator.py — template matching + dry-run report
-    └── core/detector_deployer.py  — Splunk Observability API deployment
+    ├── core/detector_deployer.py  — Splunk Observability API deployment
+    ├── core/state.py              — provisioned state tracking (idempotent reruns)
+    ├── core/retune.py             — baseline drift detection + threshold updates
+    ├── core/mute.py               — muting rules (deploy windows, maintenance)
+    ├── core/archive.py            — stale service detection + detector cleanup
+    └── core/watch.py              — continuous provisioning daemon
 
 templates/
     ├── apm.py        — latency, error rate, availability (all services)
