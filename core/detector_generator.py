@@ -45,18 +45,47 @@ def generate_detectors(
             seen_names.add(t.name)
             detectors.append(t)
 
+    all_detected = profile.all_detected()
+    all_stacks = set(profile.stacks)
+    all_frameworks = set(profile.frameworks)
+
     # APM detectors always apply
     logger.info("Generator: adding APM detectors for %s/%s", environment, service)
     _add(APMTemplates.templates(service, environment, baseline))
 
-    # Cross-cutting HTTP pattern detectors always apply (429, 401, 403, gateway errors)
-    _add(HTTPPatternsTemplates.templates(service, environment, baseline))
+    # HTTP pattern detectors (429, 401, 403, 502/503/504) only apply to services
+    # that actually serve HTTP traffic. Skip for pure gRPC services with no HTTP stack.
+    http_stacks = {"nodejs", "python", "jvm", "dotnet", "rust", "ruby"}
+    http_frameworks = {"spring_boot", "django", "flask", "fastapi", "express", "nextjs",
+                       "aspnetcore", "rails", "gin", "fiber"}
+    non_http_frameworks = {"grpc", "graphql"}
+    non_http_libs = {"istio", "kafka", "rabbitmq", "celery"}
+    is_http_service = (
+        bool(all_stacks & http_stacks)
+        or bool(all_frameworks & http_frameworks)
+        or (
+            # Unknown stack with no known non-HTTP framework/lib — apply defensively
+            not all_stacks
+            and not (all_frameworks & http_frameworks)
+            and not (all_frameworks & non_http_frameworks)
+            and not (set(profile.libraries) & non_http_libs)
+        )
+    )
+    if is_http_service:
+        _add(HTTPPatternsTemplates.templates(service, environment, baseline))
 
-    # Observability quality detectors always apply
-    _add(ObservabilityQualityTemplates.templates(service, environment, baseline))
+    # Observability quality detectors apply to real services, not synthetic test tools
+    synthetic_patterns = {"load-generator", "load_generator", "loadgenerator", "test", "synthetic", "locust"}
+    is_synthetic = any(p in service.lower() for p in synthetic_patterns)
+    if not is_synthetic:
+        _add(ObservabilityQualityTemplates.templates(service, environment, baseline))
+
+    # Library techs that require direct span evidence (db.system / messaging.system)
+    # to avoid false positives from shared infra metrics
+    SPAN_GATED_LIBS = {"kafka", "redis", "postgresql", "mysql", "mongodb", "rabbitmq",
+                       "elasticsearch", "cassandra", "dynamodb", "celery"}
 
     # Stack/framework/library detectors
-    all_detected = profile.all_detected()
     for tech in all_detected:
         template_cls = TEMPLATE_REGISTRY.get(tech)
         if not template_cls:
@@ -68,9 +97,18 @@ def generate_detectors(
             logger.debug("Skipping low-confidence technology: %s (%s)", tech, confidence)
             continue
 
+        # For data-layer libs, require direct span evidence (db.system/messaging.system client spans)
+        if tech in SPAN_GATED_LIBS and tech not in profile.direct_clients:
+            logger.debug("Skipping %s templates — no direct client span evidence for %s", tech, service)
+            continue
+
         logger.info("Generator: adding %s detectors for %s/%s (confidence=%s)", tech, environment, service, confidence)
         try:
-            _add(template_cls.templates(service, environment, baseline))
+            from templates.database import DatabaseTemplates
+            if template_cls is DatabaseTemplates and tech in ("postgresql", "mysql", "mongodb"):
+                _add(template_cls.templates(service, environment, baseline, db_type=tech))
+            else:
+                _add(template_cls.templates(service, environment, baseline))
         except Exception as e:
             logger.warning("Generator: failed to generate %s templates: %s", tech, e)
 

@@ -34,8 +34,6 @@ METRIC_FINGERPRINTS: dict[str, list[str]] = {
     "cassandra":    ["cassandra."],
     "nginx":        ["nginx."],
     "istio":        ["istio_", "envoy_"],
-    "host":         ["cpu.utilization", "cpu.steal", "disk.io", "disk.summary", "memory.utilization", "network."],
-    "aws_ec2":      ["cpu.utilization", "disk.io", "network."],
     "aws_rds":      ["aws.rds."],
     "aws_lambda":   ["aws.lambda."],
     "aws_ecs":      ["aws.ecs."],
@@ -90,8 +88,7 @@ SPAN_FINGERPRINTS: dict[str, dict[str, list[str]]] = {
                         "opentelemetry.instrumentation.grpcnetclient",
                         "opentelemetry.instrumentation.sqlclient",
                         "opentelemetry.instrumentation.stackexchangeredis",
-                        "opentelemetry.instrumentation.entityframeworkcore",
-                        "opentelemetry.instrumentation.http"],
+                        "opentelemetry.instrumentation.entityframeworkcore"],
         "jvm":         ["io.opentelemetry.spring", "io.opentelemetry.tomcat",
                         "io.opentelemetry.netty", "io.opentelemetry.jdbc"],
         "go":          ["go.opentelemetry.io", "github.com/", "google.golang.org"],
@@ -141,6 +138,9 @@ class ServiceProfile:
     span_attributes: dict[str, set[str]] = field(default_factory=dict)
     # Confidence: high/medium/low per detection
     confidence: dict[str, str] = field(default_factory=dict)
+    # Libraries confirmed via direct span evidence (db.system, messaging.system, etc.)
+    # Only these get library-specific detector templates
+    direct_clients: set[str] = field(default_factory=set)
 
     def all_detected(self) -> list[str]:
         return self.stacks + self.frameworks + self.libraries
@@ -425,8 +425,8 @@ def _build_profile(
     frameworks = {"spring_boot", "django", "flask", "fastapi", "express", "rails",
                   "aspnetcore", "gin", "fiber", "grpc", "graphql", "nextjs"}
     libraries = {"kafka", "redis", "postgresql", "mysql", "mongodb", "rabbitmq", "celery",
-                 "aws_ec2", "aws_rds", "aws_lambda", "aws_ecs", "aws_sqs", "kubernetes",
-                 "elasticsearch", "cassandra", "dynamodb", "nginx", "istio", "host"}
+                 "aws_rds", "aws_lambda", "aws_ecs", "aws_sqs", "kubernetes",
+                 "elasticsearch", "cassandra", "dynamodb", "nginx", "istio"}
 
     for key in all_keys:
         if key in stacks:
@@ -435,6 +435,13 @@ def _build_profile(
             profile.frameworks.append(key)
         elif key in libraries:
             profile.libraries.append(key)
+
+    # direct_clients: only libraries confirmed by span evidence (db.system, messaging.system)
+    # These are the only ones that get library-specific detector templates applied.
+    # Metric-only detections (e.g. a shared Redis metric on the host) are excluded.
+    db_libs = {"kafka", "redis", "postgresql", "mysql", "mongodb", "rabbitmq",
+               "elasticsearch", "cassandra", "dynamodb"}
+    profile.direct_clients = {k for k in span_detected if k in db_libs}
 
     return profile
 

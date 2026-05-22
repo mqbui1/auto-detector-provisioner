@@ -38,7 +38,7 @@ TEMPLATE_REGISTRY: dict[str, type] = {
     # Frameworks
     "spring_boot":   SpringBootTemplates,
     "spring":        SpringBootTemplates,
-    "aspnetcore":    SpringBootTemplates,   # .NET HTTP maps to Spring-equivalent HTTP detectors
+    "aspnetcore":    DotNetTemplates,        # ASP.NET Core — use .NET runtime templates
     "nextjs":        ExpressTemplates,      # Next.js uses same HTTP semantic conventions as Express
     "django":        DjangoTemplates,
     "flask":         FlaskTemplates,
