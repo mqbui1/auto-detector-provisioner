@@ -1,5 +1,8 @@
 from .apm import APMTemplates
 from .jvm import JVMTemplates
+from .go import GoTemplates
+from .python_runtime import PythonTemplates
+from .rust import RustTemplates
 from .kubernetes import KubernetesTemplates
 from .kafka import KafkaTemplates
 from .redis import RedisTemplates
@@ -29,9 +32,14 @@ TEMPLATE_REGISTRY: dict[str, type] = {
     "jvm":           JVMTemplates,
     "dotnet":        DotNetTemplates,
     "nodejs":        NodeJSTemplates,
+    "go":            GoTemplates,
+    "python":        PythonTemplates,
+    "rust":          RustTemplates,
     # Frameworks
     "spring_boot":   SpringBootTemplates,
     "spring":        SpringBootTemplates,
+    "aspnetcore":    SpringBootTemplates,   # .NET HTTP maps to Spring-equivalent HTTP detectors
+    "nextjs":        ExpressTemplates,      # Next.js uses same HTTP semantic conventions as Express
     "django":        DjangoTemplates,
     "flask":         FlaskTemplates,
     "fastapi":       FastAPITemplates,

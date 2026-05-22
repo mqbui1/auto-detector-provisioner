@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from urllib.parse import urlencode
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -71,17 +72,17 @@ def _api_get(api_base: str, token: str, path: str, params: dict | None = None) -
 
 def _execute_signalflow(api_base: str, token: str, program: str, start_ms: int, end_ms: int, resolution_ms: int = 60000) -> list[float]:
     """Execute a SignalFlow program and return the data points."""
-    url = f"{api_base}/v2/signalflow/execute"
-    body = json.dumps({
-        "program": program,
+    qs = urllib.parse.urlencode({
         "start": start_ms,
         "stop": end_ms,
         "resolution": resolution_ms,
-        "immediate": True,
-    }).encode("utf-8")
+        "immediate": "true",
+    })
+    url = f"{api_base}/v2/signalflow/execute?{qs}"
+    body = program.encode("utf-8")
     req = urllib.request.Request(
         url, data=body,
-        headers={"X-SF-Token": token, "Content-Type": "application/json"},
+        headers={"X-SF-Token": token, "Content-Type": "text/plain"},
         method="POST",
     )
     values = []
@@ -125,20 +126,40 @@ def _learn_apm_baseline(api_base: str, token: str, service: str, environment: st
     start_ms = now_ms - window_hours * 3600 * 1000
     env_filter = f'filter("sf_environment", "{environment}") and ' if environment else ""
 
-    # Latency p50/p99
-    latency_program = (
-        f'data("service.request.duration", {env_filter}filter("sf_service", "{service}")).mean().publish()'
-    )
-    latency_values = _execute_signalflow(api_base, token, latency_program, start_ms, now_ms)
+    svc_filter = f'filter("sf_service", "{service}")'
+    base_filter = f"{env_filter}{svc_filter}"
 
-    # Error rate
-    error_program = (
-        f'A = data("service.request.count", {env_filter}filter("sf_service", "{service}"), '
-        f'filter("error", "true")).sum()\n'
-        f'B = data("service.request.count", {env_filter}filter("sf_service", "{service}")).sum()\n'
-        f'(A/B * 100).publish()'
-    )
-    error_values = _execute_signalflow(api_base, token, error_program, start_ms, now_ms)
+    # Latency — try OTel semantic convention first, fall back to Splunk APM metric names
+    latency_values: list[float] = []
+    for latency_metric in [
+        "service.request.duration",                   # OTel semantic convention (ms)
+        "service.request.duration.ns.median",         # Splunk APM (nanoseconds)
+        "spans.duration.ns.median",                   # Splunk APM spans metric
+    ]:
+        prog = f'data("{latency_metric}", {base_filter}).mean().publish()'
+        vals = _execute_signalflow(api_base, token, prog, start_ms, now_ms)
+        if vals and any(v > 0 for v in vals):
+            # Convert nanoseconds to milliseconds if metric name indicates ns
+            if ".ns." in latency_metric:
+                vals = [v / 1_000_000 for v in vals]
+            latency_values = vals
+            logger.debug("Baseline: using latency metric %s (%d samples)", latency_metric, len(vals))
+            break
+
+    # Error rate — try OTel count with error filter, fall back to Splunk APM error metric
+    error_values: list[float] = []
+    for err_prog in [
+        (f'A = data("service.request.count", {base_filter}, filter("error", "true")).sum()\n'
+         f'B = data("service.request.count", {base_filter}).sum()\n'
+         f'(A/B * 100).publish()'),
+        (f'A = data("spans.count", {base_filter}, filter("sf_error", "true")).sum()\n'
+         f'B = data("spans.count", {base_filter}).sum()\n'
+         f'(A/B * 100).publish()'),
+    ]:
+        vals = _execute_signalflow(api_base, token, err_prog, start_ms, now_ms)
+        if vals:
+            error_values = vals
+            break
 
     latency_stats = _compute_stats(latency_values)
     error_stats = _compute_stats(error_values)

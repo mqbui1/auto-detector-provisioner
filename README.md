@@ -18,6 +18,9 @@ Automatically discovers services in Splunk Observability Cloud, detects their te
 | **JVM** | Heap %, GC pause, GC rate, thread count, metaspace, Hikari pool, Tomcat threads |
 | **.NET** | GC collections, heap size, exception rate, thread pool queue |
 | **Node.js** | Heap %, event loop lag, active handles |
+| **Go** | Goroutine count, GC pause, heap allocation rate, heap in-use |
+| **Python** | Thread count, GC collection rate, RSS memory, CPU utilization |
+| **Rust** | HTTP 5xx rate, request latency, panic/internal error rate |
 | **Spring Boot** | HTTP 5xx rate, request latency, actuator health, scheduler failures, outbound client errors |
 | **Django** | HTTP 5xx rate, request latency, ORM slow queries, template render time, DB connection errors |
 | **Flask** | HTTP 5xx rate, request latency, unhandled exceptions, active request concurrency |

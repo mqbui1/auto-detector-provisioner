@@ -79,6 +79,52 @@ SPAN_FINGERPRINTS: dict[str, dict[str, list[str]]] = {
         "gin":        ["gin"],
         "fiber":      ["fiber"],
     },
+    # otel.scope.name fingerprints — reliable language/framework detection
+    # even when no runtime metrics are emitted (Go, Rust, Python, Next.js, etc.)
+    "otel_scope": {
+        "nodejs":      ["@opentelemetry/instrumentation", "next.js", "opentelemetry-instrumentation-express",
+                        "opentelemetry-instrumentation-fastify", "opentelemetry-instrumentation-koa"],
+        "dotnet":      ["microsoft.aspnetcore", "microsoft.entityframeworkcore",
+                        "system.net.http", "azure.",
+                        "opentelemetry.instrumentation.aspnetcore",
+                        "opentelemetry.instrumentation.grpcnetclient",
+                        "opentelemetry.instrumentation.sqlclient",
+                        "opentelemetry.instrumentation.stackexchangeredis",
+                        "opentelemetry.instrumentation.entityframeworkcore",
+                        "opentelemetry.instrumentation.http"],
+        "jvm":         ["io.opentelemetry.spring", "io.opentelemetry.tomcat",
+                        "io.opentelemetry.netty", "io.opentelemetry.jdbc"],
+        "go":          ["go.opentelemetry.io", "github.com/", "google.golang.org"],
+        "python":      ["opentelemetry.instrumentation.", "opentelemetry-instrumentation-flask",
+                        "opentelemetry-instrumentation-django", "opentelemetry-instrumentation-fastapi",
+                        "opentelemetry-instrumentation-requests", "opentelemetry-instrumentation-grpc",
+                        "opentelemetry-instrumentation-sqlalchemy", "opentelemetry-instrumentation-celery",
+                        "opentelemetry-instrumentation-redis", "opentelemetry-instrumentation-pymongo",
+                        "opentelemetry-instrumentation-psycopg2", "opentelemetry-instrumentation-boto",
+                        "opentelemetry-instrumentation-aiohttp", "opentelemetry-instrumentation-starlette"],
+        "rust":        ["opentelemetry-instrumentation-actix", "opentelemetry-instrumentation-rocket",
+                        "opentelemetry-instrumentation-axum"],
+        "grpc":        ["@opentelemetry/instrumentation-grpc",
+                        "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc"],
+        "express":     ["@opentelemetry/instrumentation-express"],
+        "fastapi":     ["opentelemetry-instrumentation-fastapi"],
+        "django":      ["opentelemetry-instrumentation-django"],
+        "flask":       ["opentelemetry-instrumentation-flask"],
+        "aspnetcore":  ["microsoft.aspnetcore"],
+        "nextjs":      ["next.js"],
+        "istio":       ["envoy"],
+    },
+    # telemetry.sdk.language — explicit language tag from OTel SDK
+    "sdk_language": {
+        "go":     ["go"],
+        "python": ["python"],
+        "nodejs": ["nodejs", "javascript"],
+        "dotnet": ["dotnet"],
+        "jvm":    ["java"],
+        "rust":   ["rust"],
+        "cpp":    ["cpp"],
+        "ruby":   ["ruby"],
+    },
 }
 
 
@@ -136,21 +182,26 @@ def _list_apm_services(app_base: str, token: str, environment: str | None = None
     if environment:
         tag_filters.append({"tag": "sf_environment", "operation": "IN", "values": [environment]})
 
+    # Try newer APM service endpoint first
+    env_filter_str = f'filter("sf_environment", "{environment}")' if environment else "true"
     body = {
         "operationName": "GetServices",
         "variables": {
             "timeRange": {"gte": start_ms, "lte": now_ms},
-            "filters": tag_filters,
+            "environmentFilter": environment or "",
         },
         "query": (
-            "query GetServices($timeRange: TimeRangeInput!, $filters: [TagFilterInput!]) {"
-            " services(timeRange: $timeRange, filters: $filters) {"
-            " name environment } }"
+            "query GetServices($environmentFilter: String) {"
+            " serviceNames(environmentName: $environmentFilter) }"
         ),
     }
     try:
         result = _gql_post(app_base, token, "GetServices", body)
-        return ((result.get("data") or {}).get("services") or [])
+        names = ((result.get("data") or {}).get("serviceNames") or [])
+        if names:
+            env_val = environment or ""
+            return [{"name": n, "environment": env_val} for n in names if n]
+        return []
     except RuntimeError as e:
         logger.warning("APM service list failed: %s", e)
         return []
@@ -173,15 +224,16 @@ def _sample_mts_for_service(api_base: str, token: str, service: str, environment
 
 def _sample_spans_for_service(app_base: str, token: str, service: str, environment: str | None) -> list[dict]:
     """Sample recent spans for a service to detect span attribute fingerprints."""
-    import time
-    now_ms = int(time.time() * 1000)
+    import time as _time
+    now_ms = int(_time.time() * 1000)
     start_ms = now_ms - 3 * 3600 * 1000
 
-    tag_filters = [{"tag": "service.name", "operation": "IN", "values": [service]}]
+    # Use sf_service (Splunk APM dimension) not service.name (OTel attribute)
+    tag_filters = [{"tag": "sf_service", "operation": "IN", "values": [service]}]
     if environment:
         tag_filters.append({"tag": "sf_environment", "operation": "IN", "values": [environment]})
 
-    # Search for trace IDs
+    # Search for trace IDs via analytics search
     params = {
         "sharedParameters": {
             "timeRangeMillis": {"gte": start_ms, "lte": now_ms},
@@ -196,7 +248,6 @@ def _sample_spans_for_service(app_base: str, token: str, service: str, environme
         "query": "query StartAnalyticsSearch($parameters: JSON!) { startAnalyticsSearch(parameters: $parameters) }",
     }
     try:
-        import time as _time
         result = _gql_post(app_base, token, "StartAnalyticsSearch", start_body)
         job_id = ((result.get("data") or {}).get("startAnalyticsSearch") or {}).get("jobId")
         if not job_id:
@@ -207,9 +258,9 @@ def _sample_spans_for_service(app_base: str, token: str, service: str, environme
             "variables": {"jobId": job_id},
             "query": "query GetAnalyticsSearch($jobId: ID!) { getAnalyticsSearch(jobId: $jobId) }",
         }
-        delay, elapsed = 0.1, 0.0
+        delay, elapsed = 0.5, 0.0
         trace_ids = []
-        while elapsed < 15.0:
+        while elapsed < 10.0:
             r = _gql_post(app_base, token, "GetAnalyticsSearch", get_body)
             sections = ((r.get("data") or {}).get("getAnalyticsSearch") or {}).get("sections", [])
             for s in sections:
@@ -222,7 +273,11 @@ def _sample_spans_for_service(app_base: str, token: str, service: str, environme
             elapsed += delay
             delay = min(delay * 2, 2.0)
 
-        # Fetch spans for first 3 traces
+        if not trace_ids:
+            logger.debug("Span sample: no traces found for %s", service)
+            return []
+
+        # Fetch spans for first 3 traces, filtering to target service only
         spans = []
         for tid in trace_ids[:3]:
             body = {
@@ -230,11 +285,13 @@ def _sample_spans_for_service(app_base: str, token: str, service: str, environme
                 "variables": {"id": tid},
                 "query": (
                     "query TraceFullDetailsLessValidation($id: ID!) {"
-                    " trace(id: $id) { spans { tags { key value } } } }"
+                    " trace(id: $id) { spans { serviceName tags { key value } } } }"
                 ),
             }
             r = _gql_post(app_base, token, "TraceFullDetailsLessValidation", body)
-            spans.extend(((r.get("data") or {}).get("trace") or {}).get("spans") or [])
+            all_spans = ((r.get("data") or {}).get("trace") or {}).get("spans") or []
+            # Only include spans from the target service
+            spans.extend(s for s in all_spans if s.get("serviceName") == service)
         return spans
     except RuntimeError as e:
         logger.warning("Span sample failed for %s: %s", service, e)
@@ -291,6 +348,41 @@ def _detect_stack_from_spans(spans: list[dict]) -> dict[str, str]:
             if any(fw_val.startswith(v) for v in values):
                 detected[tech] = "high"
 
+    # Check otel.scope.name — most reliable for Go/Rust/Python/Next.js
+    # which don't emit runtime metrics but have distinctive scope names.
+    # Collect all scope matches first, then apply: more-specific techs win over generic ones.
+    scope_matches: dict[str, int] = {}  # tech → match count
+    for scope_val in attr_values.get("otel.scope.name", set()):
+        for tech, prefixes in SPAN_FINGERPRINTS["otel_scope"].items():
+            if any(scope_val.startswith(p.lower()) for p in prefixes):
+                scope_matches[tech] = scope_matches.get(tech, 0) + 1
+
+    # Apply scope matches with language exclusivity.
+    # Priority: rust/dotnet/jvm > go > nodejs > python (generic prefix)
+    # Once a primary language stack is confirmed, don't add conflicting stacks.
+    primary_stacks = {"rust", "dotnet", "jvm", "go", "nodejs", "python"}
+    priority_order = ["rust", "dotnet", "jvm", "aspnetcore", "go", "nodejs", "nextjs",
+                      "express", "fastapi", "django", "flask", "grpc", "istio", "python"]
+    for tech in priority_order:
+        if tech not in scope_matches:
+            continue
+        # Skip python if a more-specific primary language was already confirmed
+        if tech == "python" and any(s in detected for s in primary_stacks - {"python"}):
+            continue
+        if tech not in detected:
+            detected[tech] = "high"
+    # Add any remaining matches not in priority list (frameworks/libs)
+    for tech in scope_matches:
+        if tech not in detected and tech not in primary_stacks:
+            detected[tech] = "high"
+
+    # Check telemetry.sdk.language — explicit OTel SDK language tag
+    for lang_val in attr_values.get("telemetry.sdk.language", set()):
+        for tech, values in SPAN_FINGERPRINTS["sdk_language"].items():
+            if lang_val in values:
+                if tech not in detected:
+                    detected[tech] = "high"
+
     return detected
 
 
@@ -329,11 +421,12 @@ def _build_profile(
             profile.confidence[key] = "medium"
 
     # Classify into stacks / frameworks / libraries
-    stacks = {"jvm", "dotnet", "nodejs"}
-    frameworks = {"spring_boot", "django", "flask", "fastapi", "express", "rails", "aspnetcore", "gin", "fiber"}
+    stacks = {"jvm", "dotnet", "nodejs", "go", "python", "rust", "ruby", "cpp"}
+    frameworks = {"spring_boot", "django", "flask", "fastapi", "express", "rails",
+                  "aspnetcore", "gin", "fiber", "grpc", "graphql", "nextjs"}
     libraries = {"kafka", "redis", "postgresql", "mysql", "mongodb", "rabbitmq", "celery",
                  "aws_ec2", "aws_rds", "aws_lambda", "aws_ecs", "aws_sqs", "kubernetes",
-                 "grpc", "elasticsearch", "cassandra", "dynamodb", "nginx", "istio", "host"}
+                 "elasticsearch", "cassandra", "dynamodb", "nginx", "istio", "host"}
 
     for key in all_keys:
         if key in stacks:
@@ -364,21 +457,28 @@ def discover_services(
     apm_services = _list_apm_services(app_base, token, environment)
 
     if not apm_services:
-        # Fallback: discover via MTS catalog
+        # Fallback: discover via MTS catalog using multiple APM metrics
+        # service.request.count covers services with HTTP/gRPC instrumentation
+        # spans.count covers services that emit spans but not service.request.count
         logger.info("Discovery: APM service list empty, falling back to MTS catalog")
-        try:
-            q = f'sf_environment:"{environment}"' if environment else ""
-            data = _api_get(api_base, token, "/v2/metrictimeseries", {"query": q, "limit": 200})
-            seen = set()
-            for mts in (data.get("results") or []):
-                dims = mts.get("dimensions") or {}
-                svc = dims.get("sf_service") or dims.get("service.name")
-                env = dims.get("sf_environment") or dims.get("deployment.environment") or environment or ""
-                if svc and svc not in seen:
-                    apm_services.append({"name": svc, "environment": env})
-                    seen.add(svc)
-        except RuntimeError as e:
-            logger.warning("MTS catalog fallback failed: %s", e)
+        seen: set[str] = set()
+        for apm_metric in ["service.request.count", "spans.count", "traces.count"]:
+            try:
+                parts = [f'sf_metric:"{apm_metric}"']
+                if environment:
+                    parts.append(f'sf_environment:"{environment}"')
+                q = " AND ".join(parts)
+                data = _api_get(api_base, token, "/v2/metrictimeseries", {"query": q, "limit": 1000})
+                for mts in (data.get("results") or []):
+                    dims = mts.get("dimensions") or {}
+                    svc = dims.get("sf_service") or dims.get("service.name")
+                    env = dims.get("sf_environment") or dims.get("deployment.environment") or environment or ""
+                    if svc and svc not in seen:
+                        apm_services.append({"name": svc, "environment": env})
+                        seen.add(svc)
+            except RuntimeError as e:
+                logger.warning("MTS fallback failed for metric %s: %s", apm_metric, e)
+        logger.info("Discovery: MTS fallback found %d services", len(apm_services))
 
     profiles = []
     for svc_info in apm_services:
