@@ -20,19 +20,9 @@ logger = logging.getLogger(__name__)
 # Regex to extract metric names from SignalFlow data() calls
 _METRIC_RE = re.compile(r'data\(\s*"([^"]+)"')
 
-# Metrics that every OTel-instrumented service emits — skip MTS check for these
-_UNIVERSAL_METRICS = {
-    "service.request.count",
-    "service.request.duration",
-    "spans.count",
-    "spans.duration.ns.median",
-    "traces.count",
-}
-
-
 def extract_metrics_from_signalflow(signalflow: str) -> set[str]:
     """Extract all metric names from data() calls in a SignalFlow program."""
-    return {m for m in _METRIC_RE.findall(signalflow) if m not in _UNIVERSAL_METRICS}
+    return set(_METRIC_RE.findall(signalflow))
 
 
 def probe_existing_metrics(
@@ -97,8 +87,8 @@ def filter_detectors_by_metric_existence(
     Remove detectors whose required metrics don't exist for this service.
 
     A detector is kept if:
-    - It has no data() calls with non-universal metrics (span/APM-only), OR
-    - At least one of its required metrics exists
+    - It has no data() calls at all (threshold-only logic), OR
+    - At least one of its required metrics exists for this service
     """
     kept = []
     dropped = []

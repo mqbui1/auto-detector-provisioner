@@ -10,7 +10,7 @@ from typing import Any
 
 from templates import TEMPLATE_REGISTRY
 from templates.apm import APMTemplates, DetectorTemplate
-from templates.http_patterns import HTTPPatternsTemplates, ObservabilityQualityTemplates
+from templates.http_patterns import HTTPPatternsTemplates
 from .discovery import ServiceProfile
 from .baseline_learner import ServiceBaseline
 from .metric_filter import (
@@ -81,12 +81,6 @@ def generate_detectors(
     )
     if is_http_service:
         _add(HTTPPatternsTemplates.templates(service, environment, baseline))
-
-    # Observability quality detectors apply to real services, not synthetic test tools
-    synthetic_patterns = {"load-generator", "load_generator", "loadgenerator", "test", "synthetic", "locust"}
-    is_synthetic = any(p in service.lower() for p in synthetic_patterns)
-    if not is_synthetic:
-        _add(ObservabilityQualityTemplates.templates(service, environment, baseline))
 
     # Library techs that require direct span evidence (db.system / messaging.system)
     # to avoid false positives from shared infra metrics
