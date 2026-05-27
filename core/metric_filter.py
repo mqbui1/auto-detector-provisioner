@@ -25,6 +25,34 @@ def extract_metrics_from_signalflow(signalflow: str) -> set[str]:
     return set(_METRIC_RE.findall(signalflow))
 
 
+def _query_mts_batch(
+    api_base: str,
+    token: str,
+    batch: list[str],
+    filters: list[str],
+) -> set[str]:
+    """Run one MTS catalog batch query, return metric names found."""
+    metric_filter = " OR ".join(f'sf_metric:"{m}"' for m in batch)
+    query = f'({metric_filter}) AND {" AND ".join(filters)}'
+    found: set[str] = set()
+    try:
+        qs = urllib.parse.urlencode({"query": query, "limit": len(batch) * 2})
+        url = f"{api_base}/v2/metrictimeseries?{qs}"
+        req = urllib.request.Request(
+            url, headers={"X-SF-Token": token, "Accept": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        for mts in (data.get("results") or []):
+            metric = mts.get("metric") or mts.get("name") or ""
+            if metric:
+                found.add(metric)
+    except Exception as e:
+        logger.warning("metric_filter: probe failed (filters=%s): %s", filters, e)
+        found.update(batch)  # fail open
+    return found
+
+
 def probe_existing_metrics(
     api_base: str,
     token: str,
@@ -36,38 +64,39 @@ def probe_existing_metrics(
     Query MTS catalog to find which of the candidate_metrics actually have
     data for this service. Returns the subset that exist.
 
-    Uses a single bulk query — one API call regardless of how many metrics.
+    Queries twice per batch:
+    1. sf_service:"<service>" — APM-promoted metrics (service.request.count etc.)
+    2. service.name:"<service>" — OTel SDK runtime metrics that only carry the
+       OTel resource attribute (go.goroutine.count, nodejs.eventloop.*, dotnet.gc.*,
+       process.runtime.* etc.) and are never promoted to sf_service by the
+       signalfx exporter.
     """
     if not candidate_metrics:
         return set()
 
-    filters = [f'sf_service:"{service}"']
-    if environment:
-        filters.append(f'sf_environment:"{environment}"')
+    env_filter_sf = [f'sf_environment:"{environment}"'] if environment else []
+    env_filter_otel = [f'deployment.environment:"{environment}"'] if environment else []
 
     existing: set[str] = set()
     metrics_list = sorted(candidate_metrics)
 
     for batch_start in range(0, len(metrics_list), 20):
         batch = metrics_list[batch_start:batch_start + 20]
-        metric_filter = " OR ".join(f'sf_metric:"{m}"' for m in batch)
-        query = f'({metric_filter}) AND {" AND ".join(filters)}'
 
-        try:
-            qs = urllib.parse.urlencode({"query": query, "limit": len(batch) * 2})
-            url = f"{api_base}/v2/metrictimeseries?{qs}"
-            req = urllib.request.Request(
-                url, headers={"X-SF-Token": token, "Accept": "application/json"}
-            )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            for mts in (data.get("results") or []):
-                metric = mts.get("metric") or mts.get("name") or ""
-                if metric:
-                    existing.add(metric)
-        except Exception as e:
-            logger.warning("metric_filter: probe failed for %s batch: %s", service, e)
-            existing.update(batch)
+        # Query 1: sf_service dimension (APM-instrumented metrics)
+        existing.update(_query_mts_batch(
+            api_base, token, batch,
+            [f'sf_service:"{service}"'] + env_filter_sf,
+        ))
+
+        # Query 2: service.name dimension (OTel SDK runtime metrics)
+        # Only run if query 1 didn't find everything — avoids unnecessary API calls
+        remaining = set(batch) - existing
+        if remaining:
+            existing.update(_query_mts_batch(
+                api_base, token, list(remaining),
+                [f'service.name:"{service}"'] + env_filter_otel,
+            ))
 
     logger.debug("metric_filter: %s/%s — %d/%d metrics exist: %s",
                  environment, service, len(existing), len(candidate_metrics),
@@ -93,6 +122,8 @@ def probe_http_status_codes_exist(
     filters = [f'sf_service:"{service}"', 'sf_metric:"service.request.count"']
     if environment:
         filters.append(f'sf_environment:"{environment}"')
+    # service.request.count is always APM-promoted to sf_service, so no
+    # fallback to service.name needed here.
     query = " AND ".join(filters)
 
     try:

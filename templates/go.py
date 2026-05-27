@@ -12,75 +12,86 @@ class GoTemplates:
 
     @staticmethod
     def templates(service: str, environment: str, baseline: Any | None = None) -> list[DetectorTemplate]:
-        env_filter = f'filter("sf_environment", "{environment}") and ' if environment else ""
-        svc_filter = f'filter("sf_service", "{service}")'
-        f = f"{env_filter}{svc_filter}"
+        # OTel Go runtime metrics carry service.name + deployment.environment,
+        # not sf_service + sf_environment. Use OTel dimensions for runtime detectors.
+        env_filter_rt = f'filter("deployment.environment", "{environment}") and ' if environment else ""
+        svc_filter_rt = f'filter("service.name", "{service}")'
+        f_rt = f"{env_filter_rt}{svc_filter_rt}"
 
         detectors = []
 
         # ── Goroutine count ───────────────────────────────────────────────────
-        # High goroutine count = goroutine leak
+        # go.goroutine.count is the stable OTel Go runtime metric name (SDK >=1.28)
         detectors.append(DetectorTemplate(
             name=f"[{service}] Go goroutine count high",
             description="Go goroutine count abnormally high — possible goroutine leak. Warn: >1000  Critical: >5000",
             severity="Major",
             signalflow=f"""
-A = data("process.runtime.go.goroutines", {f}).mean(over="5m")
+A = data("go.goroutine.count", {f_rt}).mean(over="5m")
 detect(when(A > 5000), lasting="5m").publish("Critical")
 detect(when(A > 1000) and when(A <= 5000), lasting="5m").publish("Warning")
 """.strip(),
             threshold_type="fixed",
             confidence="high",
             tags=["go", "goroutines"],
+            rationale=(
+                "Goroutine leaks are the most common silent memory/CPU bug in Go. A goroutine "
+                "blocked on a channel, HTTP call, or DB query accumulates indefinitely without "
+                "crashing the process — rising count and memory are the only symptoms. "
+                "Normal Go microservices run 10–500 goroutines; >1000 sustained is almost always "
+                "a leak. Metric: go.goroutine.count (stable OTel Go SDK name, replaces "
+                "process.runtime.go.goroutines). Thresholds: 1000/5000 — tune to your service's "
+                "normal steady-state goroutine count."
+            ),
         ))
 
-        # ── GC pause ──────────────────────────────────────────────────────────
+        # ── GC heap goal ──────────────────────────────────────────────────────
+        # go.memory.gc.goal — target heap size for next GC; growing = heap pressure
         detectors.append(DetectorTemplate(
-            name=f"[{service}] Go GC pause time high",
-            description="Go GC pause time elevated — consider GC tuning or reducing allocation rate. Warn: >10ms  Critical: >50ms",
+            name=f"[{service}] Go GC heap goal high",
+            description="Go GC heap goal (next GC target size) elevated — heap is growing. Warn: >512MB  Critical: >1GB",
             severity="Warning",
             signalflow=f"""
-A = data("process.runtime.go.gc.pause_ns", {f}).mean(over="5m") / 1000000
-detect(when(A > 50), lasting="5m").publish("Critical")
-detect(when(A > 10) and when(A <= 50), lasting="5m").publish("Warning")
+A = data("go.memory.gc.goal", {f_rt}).mean(over="5m")
+detect(when(A > 1073741824), lasting="5m").publish("Critical")
+detect(when(A > 536870912) and when(A <= 1073741824), lasting="5m").publish("Warning")
 """.strip(),
             threshold_type="fixed",
             confidence="high",
             tags=["go", "gc"],
+            rationale=(
+                "go.memory.gc.goal is the heap size at which the next GC cycle fires. A "
+                "continuously growing goal means the heap is expanding faster than GC reclaims it "
+                "— a leading indicator of memory pressure before OOM. More reliable than 'heap "
+                "used' because it reflects Go's GC pacing algorithm (GOGC). Metric: "
+                "go.memory.gc.goal (stable OTel Go SDK, replaces "
+                "process.runtime.go.gc.heap_goal). Thresholds: 512MB/1GB — tune to 50%/75% of "
+                "your container memory limit."
+            ),
         ))
 
-        # ── Heap allocation ───────────────────────────────────────────────────
+        # ── Heap allocation rate (dynamic if baseline available) ───────────────
         if baseline and baseline.latency_mean_ms:
-            # Use dynamic for heap alloc rate if baseline available
             detectors.append(DetectorTemplate(
                 name=f"[{service}] Go heap allocation rate anomaly",
                 description="Go heap allocation rate anomaly — possible memory pressure or allocation-heavy code path",
                 severity="Warning",
                 signalflow=f"""
-A = data("process.runtime.go.mem.heap_alloc", {f}).rate(over="5m")
-mean = data("process.runtime.go.mem.heap_alloc", {f}).mean(over="1h")
-std = data("process.runtime.go.mem.heap_alloc", {f}).stddev(over="1h")
+A = data("go.memory.allocated", {f_rt}).rate(over="5m")
+mean = data("go.memory.allocated", {f_rt}).mean(over="1h")
+std = data("go.memory.allocated", {f_rt}).stddev(over="1h")
 detect(when(A > mean + 3 * std), lasting="5m").publish("Anomaly")
 detect(when(A > mean + 2 * std) and when(A <= mean + 3 * std), lasting="5m").publish("Warning")
 """.strip(),
                 threshold_type="dynamic",
                 confidence="medium",
                 tags=["go", "memory"],
+                rationale=(
+                    "Heap allocation rate spike (mean+2σ/3σ from baseline) indicates a code path "
+                    "creating objects at an unusual rate — often triggered by a new traffic pattern "
+                    "or a recent deploy introducing allocation-heavy logic. Dynamic thresholds "
+                    "self-tune to this service's normal allocation rate. Metric: go.memory.allocated."
+                ),
             ))
-
-        # ── Heap in-use ───────────────────────────────────────────────────────
-        detectors.append(DetectorTemplate(
-            name=f"[{service}] Go heap in-use high",
-            description="Go heap in-use memory growing — check for memory leaks or large object retention. Warn: >512MB  Critical: >1GB",
-            severity="Warning",
-            signalflow=f"""
-A = data("process.runtime.go.mem.heap_inuse", {f}).mean(over="5m")
-detect(when(A > 1073741824), lasting="5m").publish("Critical")
-detect(when(A > 536870912) and when(A <= 1073741824), lasting="5m").publish("Warning")
-""".strip(),
-            threshold_type="fixed",
-            confidence="medium",
-            tags=["go", "memory"],
-        ))
 
         return detectors

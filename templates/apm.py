@@ -56,12 +56,15 @@ class APMTemplates:
             ),
             severity="Major",
             signalflow=f"""
-A = data("service.request.duration", {f}, rollup="p99").mean(over="5m")
+_otel = data("service.request.duration", {f}, rollup="p99").mean(over="5m")
+_splunk = data("service.request.duration.ns.median", {f}).scale(0.000001).mean(over="5m")
+A = coalesce(_otel, _splunk)
 detect(when(A > {anomaly_thresh}), lasting="5m").publish("Anomaly")
 detect(when(A > {warn_thresh}) and when(A <= {anomaly_thresh}), lasting="5m").publish("Warning")
 """.strip(),
             threshold_type=threshold_type,
             confidence=confidence,
+            required_metrics=["service.request.duration", "service.request.duration.ns.median"],
             tags=["apm", "latency"],
             rationale=(
                 "p99 latency is the standard SLI for user-facing latency per Google SRE Book §6. "
@@ -72,7 +75,9 @@ detect(when(A > {warn_thresh}) and when(A <= {anomaly_thresh}), lasting="5m").pu
                    f"Tune by adjusting the σ multiplier if you see too many false positives."
                    if threshold_type == "dynamic" else
                    "Fixed thresholds (1s warn / 3s critical) from Splunk APM best practices. "
-                   "Tune once baseline data is available (re-run with --baseline-window-hours 24).")
+                   "Tune once baseline data is available (re-run with --baseline-window-hours 24). "
+                   "Source: Google SRE Book §6 (SLIs); Splunk APM Detector Best Practices; "
+                   "OTel Semantic Conventions v1.24 (service.request.duration).")
             ),
         ))
 
@@ -116,7 +121,9 @@ detect(when(error_rate > {warn_thresh_err}) and when(error_rate <= {anomaly_thre
                    f"Tune the multipliers if your service has bursty but acceptable errors."
                    if err_threshold_type == "dynamic" else
                    "Fixed thresholds (1% warn / 5% critical) from Splunk APM best practices and "
-                   "the SRE workbook availability targets. Tune once you know your error budget.")
+                   "the SRE workbook availability targets. Tune once you know your error budget. "
+                   "Source: Google SRE Book §6 (error budgets); Splunk APM best practices; "
+                   "OTel Semantic Conventions v1.24 (service.request.count + error attribute).")
             ),
         ))
 
@@ -153,9 +160,9 @@ detect(when(A is None), lasting="10m").publish("Critical")
                 "Detects complete absence of trace data — the most critical signal before any "
                 "other alert can fire. A service emitting zero spans means either it crashed, "
                 "was undeployed, or the OTel collector pipeline broke. "
-                "Source: Splunk APM 'no-data' alerting pattern. The 10-minute window avoids "
-                "false positives during rolling restarts. Tune the window if your deployments "
-                "take longer than 10 minutes."
+                "Source: Splunk APM no-data alerting pattern; Google SRE Book §6 (alerting on "
+                "absence); OTel Collector health check best practices. The 10-minute window avoids "
+                "false positives during rolling restarts — tune if your deploys take longer."
             ),
         ))
 

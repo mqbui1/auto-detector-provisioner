@@ -88,19 +88,30 @@ def _execute_signalflow(api_base: str, token: str, program: str, start_ms: int, 
     values = []
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
-            for line in resp:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    msg = json.loads(line)
-                except Exception:
-                    continue
-                if msg.get("type") == "data":
-                    for ts_data in (msg.get("data") or []):
-                        v = ts_data.get("value")
-                        if v is not None:
-                            values.append(float(v))
+            raw = resp.read().decode("utf-8")
+        # SSE format: each event is separated by blank lines.
+        # Each event has "event: <type>" and one or more "data: <line>" lines.
+        # We collect data: lines, strip the prefix, join them, then parse as JSON.
+        current_event = ""
+        data_lines: list[str] = []
+        for line in raw.splitlines():
+            if line.startswith("event:"):
+                current_event = line[6:].strip()
+                data_lines = []
+            elif line.startswith("data:"):
+                data_lines.append(line[5:].strip())
+            elif line == "" and data_lines:
+                # End of event block — parse if it's a data event
+                if current_event == "data":
+                    try:
+                        msg = json.loads("\n".join(data_lines))
+                        for ts_data in (msg.get("data") or []):
+                            v = ts_data.get("value")
+                            if v is not None:
+                                values.append(float(v))
+                    except Exception:
+                        pass
+                data_lines = []
     except Exception as e:
         logger.warning("SignalFlow execution failed: %s", e)
     return values
@@ -148,11 +159,13 @@ def _learn_apm_baseline(api_base: str, token: str, service: str, environment: st
 
     # Error rate — try OTel count with error filter, fall back to Splunk APM error metric
     error_values: list[float] = []
+    err_filter = f'filter("error", "true") and {base_filter}'
+    sf_err_filter = f'filter("sf_error", "true") and {base_filter}'
     for err_prog in [
-        (f'A = data("service.request.count", {base_filter}, filter("error", "true")).sum()\n'
+        (f'A = data("service.request.count", {err_filter}).sum()\n'
          f'B = data("service.request.count", {base_filter}).sum()\n'
          f'(A/B * 100).publish()'),
-        (f'A = data("spans.count", {base_filter}, filter("sf_error", "true")).sum()\n'
+        (f'A = data("spans.count", {sf_err_filter}).sum()\n'
          f'B = data("spans.count", {base_filter}).sum()\n'
          f'(A/B * 100).publish()'),
     ]:

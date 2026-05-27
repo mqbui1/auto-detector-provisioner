@@ -42,7 +42,7 @@ from pathlib import Path
 
 from core.discovery import discover_services
 from core.baseline_learner import learn_baseline, load_baseline
-from core.detector_generator import generate_detectors, format_dry_run_report
+from core.detector_generator import generate_detectors, format_dry_run_report, format_html_report
 from core.detector_deployer import deploy_detectors, format_deploy_summary
 from core.state import ProvisionerState, DetectorRecord, STATE_FILE
 from core.retune import retune_service, baseline_hash, signalflow_hash, format_retune_summary
@@ -111,6 +111,8 @@ def parse_args() -> argparse.Namespace:
     watch.add_argument("--auto-archive", action="store_true",
                        help="Automatically archive stale services in watch mode")
 
+    parser.add_argument("--html-report", type=Path, metavar="FILE",
+                        help="Write a self-contained HTML report to FILE (e.g. report.html)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
 
     return parser.parse_args()
@@ -236,6 +238,7 @@ def main() -> int:
 
     total_actioned = 0
     total_failed = 0
+    html_data: list[tuple] = []  # (profile, detectors, baseline) for HTML report
 
     for profile in profiles:
         print(f"\nProcessing: {profile.service} (env={profile.environment})", file=sys.stderr)
@@ -294,8 +297,9 @@ def main() -> int:
                     output_dir=args.baseline_dir,
                 )
             if baseline.is_reliable():
+                err_pct = baseline.error_rate_pct or 0.0
                 print(f"  Baseline: latency={baseline.latency_mean_ms:.1f}ms "
-                      f"error_rate={baseline.error_rate_pct:.2f}% "
+                      f"error_rate={err_pct:.2f}% "
                       f"samples={baseline.sample_count}", file=sys.stderr)
             else:
                 print(f"  Baseline: insufficient samples — using fixed thresholds", file=sys.stderr)
@@ -310,6 +314,7 @@ def main() -> int:
             token=args.token,
         )
         print(format_dry_run_report(profile, detectors, baseline))
+        html_data.append((profile, detectors, baseline))
 
         # Deploy
         results = deploy_detectors(
@@ -359,6 +364,12 @@ def main() -> int:
     if dry_run and not args.retune:
         print("\nRun with --auto-deploy to create these detectors.", file=sys.stderr)
     print(f"{'='*60}\n", file=sys.stderr)
+
+    if args.html_report and html_data:
+        html = format_html_report(html_data, realm=args.realm, environment=args.environment)
+        args.html_report.parent.mkdir(parents=True, exist_ok=True)
+        args.html_report.write_text(html, encoding="utf-8")
+        print(f"HTML report written to: {args.html_report}", file=sys.stderr)
 
     return 0 if total_failed == 0 else 1
 
