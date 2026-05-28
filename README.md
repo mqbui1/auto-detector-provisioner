@@ -44,6 +44,54 @@ Automatically discovers services in Splunk Observability Cloud, detects their te
 | **Batch/Cron** | Job failures, duration anomaly, missed schedule |
 | **Observability** | OTel span export errors, metric reporting gaps, sampler drop rate |
 
+## Baseline learning
+
+Baselines are computed by running SignalFlow queries against the last 24 hours of live telemetry (configurable via `--baseline-window-hours`).
+
+### Latency baseline
+
+Tries these metrics in order, uses the first one with data:
+
+1. `service.request.duration` — OTel standard (seconds)
+2. `service.request.duration.ns.median` — Splunk APM (nanoseconds)
+3. `spans.duration.ns.median` — Splunk APM spans metric
+
+From 1-minute resolution data points over the window, it computes **mean**, **stddev**, and **p50/p95/p99** percentiles.
+
+### Error rate baseline
+
+```
+error_count / total_count × 100
+```
+
+Where `error_count` filters on `sf_error=true` spans over the same window.
+
+### Threshold derivation
+
+| Threshold | Formula |
+|-----------|---------|
+| Warn | `mean + 2 × stddev` |
+| Anomaly / Critical | `mean + 3 × stddev` |
+
+For example, a service with mean latency 247ms and stddev 100ms gets: warn at 447ms, anomaly at 547ms.
+
+### Dynamic vs Fixed
+
+A baseline is **reliable** when `sample_count ≥ 30`. If there aren't enough samples (new service, low-traffic service), thresholds fall back to fixed industry defaults:
+
+| Signal | Fixed warn | Fixed critical |
+|--------|-----------|----------------|
+| Latency | 1 000ms | 3 000ms |
+| Error rate | 1% | 5% |
+
+### Cache behavior
+
+Baselines are cached in `data/baselines/<env>__<service>.json` and automatically invalidated when:
+- Older than **7 days**
+- `sample_count < 100` (indicates a broken or empty learning run)
+
+Use `--skip-baseline` to force fixed thresholds, or delete the cache file to force a re-learn on the next run.
+
 ## Threshold types
 
 - **Dynamic** (📈) — thresholds derived from observed baseline (`mean + N×stddev`). Requires sufficient samples.
@@ -75,6 +123,9 @@ python3 provision.py --realm us1 --token $TOKEN --environment production --servi
 
 # Auto-deploy detectors
 python3 provision.py --realm us1 --token $TOKEN --environment production --auto-deploy
+
+# Reconcile — update changed detectors in-place, create missing ones, skip unchanged
+python3 provision.py --realm us1 --token $TOKEN --environment production --reconcile --auto-deploy
 
 # Use fixed thresholds only (skip baseline learning)
 python3 provision.py --realm us1 --token $TOKEN --environment production --skip-baseline
@@ -191,7 +242,12 @@ provision.py (CLI entry point)
     ├── core/retune.py             — baseline drift detection + threshold updates
     ├── core/mute.py               — muting rules (deploy windows, maintenance)
     ├── core/archive.py            — stale service detection + detector cleanup
-    └── core/watch.py              — continuous provisioning daemon
+    ├── core/watch.py              — continuous provisioning daemon
+    ├── core/html_report.py        — interactive HTML report generation
+    └── core/report_server.py      — local deploy server for HTML report
+
+tests/
+    └── test_templates.py  — validates every template against the live Splunk API
 
 templates/
     ├── apm.py        — latency, error rate, availability (all services)
