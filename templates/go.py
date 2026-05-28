@@ -27,7 +27,7 @@ class GoTemplates:
             description="Go goroutine count abnormally high — possible goroutine leak. Warn: >1000  Critical: >5000",
             severity="Major",
             signalflow=f"""
-A = data("go.goroutine.count", {f_rt}).mean(over="5m")
+A = data("go.goroutine.count", filter={f_rt}).mean(over="5m")
 detect(when(A > 5000), lasting="5m").publish("Critical")
 detect(when(A > 1000) and when(A <= 5000), lasting="5m").publish("Warning")
 """.strip(),
@@ -52,7 +52,7 @@ detect(when(A > 1000) and when(A <= 5000), lasting="5m").publish("Warning")
             description="Go GC heap goal (next GC target size) elevated — heap is growing. Warn: >512MB  Critical: >1GB",
             severity="Warning",
             signalflow=f"""
-A = data("go.memory.gc.goal", {f_rt}).mean(over="5m")
+A = data("go.memory.gc.goal", filter={f_rt}).mean(over="5m")
 detect(when(A > 1073741824), lasting="5m").publish("Critical")
 detect(when(A > 536870912) and when(A <= 1073741824), lasting="5m").publish("Warning")
 """.strip(),
@@ -77,9 +77,9 @@ detect(when(A > 536870912) and when(A <= 1073741824), lasting="5m").publish("War
                 description="Go heap allocation rate anomaly — possible memory pressure or allocation-heavy code path",
                 severity="Warning",
                 signalflow=f"""
-A = data("go.memory.allocated", {f_rt}).rate(over="5m")
-mean = data("go.memory.allocated", {f_rt}).mean(over="1h")
-std = data("go.memory.allocated", {f_rt}).stddev(over="1h")
+A = data("go.memory.allocated", filter={f_rt}).mean(over="5m")
+mean = data("go.memory.allocated", filter={f_rt}).mean(over="1h")
+std = data("go.memory.allocated", filter={f_rt}).stddev(over="1h")
 detect(when(A > mean + 3 * std), lasting="5m").publish("Anomaly")
 detect(when(A > mean + 2 * std) and when(A <= mean + 3 * std), lasting="5m").publish("Warning")
 """.strip(),

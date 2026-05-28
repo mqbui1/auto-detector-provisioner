@@ -23,8 +23,8 @@ class DjangoTemplates:
             description="Django server-side HTTP 5xx error rate elevated. Warn: >1%  Critical: >5%",
             severity="Major",
             signalflow=f"""
-total = data("django.request", {f}).count(over="2m")
-errors = data("django.request", {f}, filter=filter("http.status_code", "5*")).count(over="2m")
+total = data("django.request", filter={f}).count(over="2m")
+errors = data("django.request", filter={f} and filter("http.status_code", "5*")).count(over="2m")
 error_pct = errors / total * 100
 detect(when(error_pct > 5), lasting="2m").publish("Critical")
 detect(when(error_pct > 1) and when(error_pct <= 5), lasting="2m").publish("Warning")
@@ -50,7 +50,7 @@ detect(when(error_pct > 1) and when(error_pct <= 5), lasting="2m").publish("Warn
             description=desc,
             severity="Major",
             signalflow=f"""
-A = data("django.request.duration", {f}).percentile(pct=99, over="5m")
+A = data("django.request.duration", filter={f}).percentile(pct=99, over="5m")
 detect(when(A > {anomaly_t}), lasting="5m").publish("Anomaly")
 detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("Warning")
 """.strip(),
@@ -65,7 +65,7 @@ detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("War
             description="Django ORM database query latency elevated — possible missing index or N+1. Warn: >100ms  Critical: >500ms",
             severity="Warning",
             signalflow=f"""
-A = data("db.client.operation.duration", {f}).percentile(pct=95, over="5m")
+A = data("db.client.operation.duration", filter={f}).percentile(pct=95, over="5m")
 detect(when(A > 500), lasting="5m").publish("Critical")
 detect(when(A > 100) and when(A <= 500), lasting="5m").publish("Warning")
 """.strip(),
@@ -80,7 +80,7 @@ detect(when(A > 100) and when(A <= 500), lasting="5m").publish("Warning")
             description="Django template rendering unusually slow — check for complex template logic or missing cache",
             severity="Warning",
             signalflow=f"""
-A = data("django.template.render.duration", {f}).mean(over="5m")
+A = data("django.template.render.duration", filter={f}).mean(over="5m")
 detect(when(A > 200), lasting="5m").publish("Warning")
 """.strip(),
             threshold_type="fixed",
@@ -94,7 +94,7 @@ detect(when(A > 200), lasting="5m").publish("Warning")
             description="Django database connection errors detected — possible DB unavailability or pool exhaustion",
             severity="Critical",
             signalflow=f"""
-A = data("django.db.connection.errors", {f}).sum(over="2m")
+A = data("django.db.connection.errors", filter={f}).sum(over="2m")
 detect(when(A > 5), lasting="2m").publish("Critical")
 """.strip(),
             threshold_type="fixed",

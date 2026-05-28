@@ -25,8 +25,8 @@ class IstioTemplates:
             description="Istio sidecar (Envoy) request error rate elevated — proxy-level failures. Warn: >1%  Critical: >5%",
             severity="Major",
             signalflow=f"""
-total = data("istio_requests_total", {f}).sum(over="2m")
-errors = data("istio_requests_total", {f}, filter=filter("response_code", "5*")).sum(over="2m")
+total = data("istio_requests_total", filter={f}).sum(over="2m")
+errors = data("istio_requests_total", filter={f} and filter("response_code", "5*")).sum(over="2m")
 error_pct = errors / total * 100
 detect(when(error_pct > 5), lasting="2m").publish("Critical")
 detect(when(error_pct > 1) and when(error_pct <= 5), lasting="2m").publish("Warning")
@@ -42,7 +42,7 @@ detect(when(error_pct > 1) and when(error_pct <= 5), lasting="2m").publish("Warn
             description="Istio Envoy circuit breaker open — upstream ejections occurring. Traffic is being blocked to a failing host.",
             severity="Critical",
             signalflow=f"""
-A = data("envoy_cluster_outlier_detection_ejections_active", {f}).max(over="2m")
+A = data("envoy_cluster_outlier_detection_ejections_active", filter={f}).max(over="2m")
 detect(when(A > 0), lasting="2m").publish("Critical")
 """.strip(),
             threshold_type="fixed",
@@ -56,7 +56,7 @@ detect(when(A > 0), lasting="2m").publish("Critical")
             description="Istio Envoy upstream connection failures — service mesh connectivity issues between services",
             severity="Major",
             signalflow=f"""
-A = data("envoy_cluster_upstream_cx_connect_fail", {f}).sum(over="5m")
+A = data("envoy_cluster_upstream_cx_connect_fail", filter={f}).sum(over="5m")
 detect(when(A > 10), lasting="5m").publish("Critical")
 detect(when(A > 1) and when(A <= 10), lasting="5m").publish("Warning")
 """.strip(),
@@ -81,7 +81,7 @@ detect(when(A > 1) and when(A <= 10), lasting="5m").publish("Warning")
             description=desc,
             severity="Major",
             signalflow=f"""
-A = data("istio_request_duration_milliseconds", {f}).percentile(pct=99, over="5m")
+A = data("istio_request_duration_milliseconds", filter={f}).percentile(pct=99, over="5m")
 detect(when(A > {anomaly_t}), lasting="5m").publish("Anomaly")
 detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("Warning")
 """.strip(),
@@ -96,7 +96,7 @@ detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("War
             description="Istio retry budget exhausted — too many retries in flight, upstream is saturated",
             severity="Major",
             signalflow=f"""
-A = data("envoy_cluster_upstream_rq_retry_overflow", {f}).sum(over="5m")
+A = data("envoy_cluster_upstream_rq_retry_overflow", filter={f}).sum(over="5m")
 detect(when(A > 0), lasting="2m").publish("Critical")
 """.strip(),
             threshold_type="fixed",
@@ -110,7 +110,7 @@ detect(when(A > 0), lasting="2m").publish("Critical")
             description="Istio mTLS handshake failures detected — certificate rotation issue or policy misconfiguration",
             severity="Critical",
             signalflow=f"""
-A = data("envoy_listener_ssl_handshake_error", {f}).sum(over="5m")
+A = data("envoy_listener_ssl_handshake_error", filter={f}).sum(over="5m")
 detect(when(A > 5), lasting="5m").publish("Critical")
 """.strip(),
             threshold_type="fixed",
@@ -124,7 +124,7 @@ detect(when(A > 5), lasting="5m").publish("Critical")
             description="Istio Envoy upstream pending request queue elevated — upstream cluster overloaded. Warn: >100  Critical: >500",
             severity="Warning",
             signalflow=f"""
-A = data("envoy_cluster_upstream_rq_pending_active", {f}).max(over="2m")
+A = data("envoy_cluster_upstream_rq_pending_active", filter={f}).max(over="2m")
 detect(when(A > 500), lasting="2m").publish("Critical")
 detect(when(A > 100) and when(A <= 500), lasting="2m").publish("Warning")
 """.strip(),

@@ -24,8 +24,8 @@ class SpringBootTemplates:
             description="Spring Boot server-side HTTP 5xx error rate elevated. Warn: >1%  Critical: >5%",
             severity="Major",
             signalflow=f"""
-total = data("spring.http.server.requests", {f}).count(over="2m")
-errors = data("spring.http.server.requests", {f}, filter=filter("outcome", "SERVER_ERROR")).count(over="2m")
+total = data("spring.http.server.requests", filter={f}).count(over="2m")
+errors = data("spring.http.server.requests", filter={f} and filter("outcome", "SERVER_ERROR")).count(over="2m")
 error_pct = errors / total * 100
 detect(when(error_pct > 5), lasting="2m").publish("Critical")
 detect(when(error_pct > 1) and when(error_pct <= 5), lasting="2m").publish("Warning")
@@ -52,7 +52,7 @@ detect(when(error_pct > 1) and when(error_pct <= 5), lasting="2m").publish("Warn
             description=desc,
             severity="Major",
             signalflow=f"""
-A = data("spring.http.server.requests", {f}).percentile(pct=99, over="5m")
+A = data("spring.http.server.requests", filter={f}).percentile(pct=99, over="5m")
 detect(when(A > {anomaly_t}), lasting="5m").publish("Anomaly")
 detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("Warning")
 """.strip(),
@@ -67,7 +67,7 @@ detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("War
             description="Spring Boot actuator health endpoint reporting non-UP status for sustained period",
             severity="Critical",
             signalflow=f"""
-A = data("spring.boot.actuator.health", {f}).mean(over="2m")
+A = data("spring.boot.actuator.health", filter={f}).mean(over="2m")
 detect(when(A < 1), lasting="2m").publish("Critical")
 """.strip(),
             threshold_type="fixed",
@@ -81,7 +81,7 @@ detect(when(A < 1), lasting="2m").publish("Critical")
             description="Spring Boot @Scheduled tasks failing — background job errors detected",
             severity="Warning",
             signalflow=f"""
-A = data("spring.task.scheduled.execution.failed", {f}).sum(over="5m")
+A = data("spring.task.scheduled.execution.failed", filter={f}).sum(over="5m")
 detect(when(A > 3), lasting="5m").publish("Warning")
 """.strip(),
             threshold_type="fixed",
@@ -95,8 +95,8 @@ detect(when(A > 3), lasting="5m").publish("Warning")
             description="Spring Boot RestTemplate/Feign outbound HTTP 5xx error rate elevated. Warn: >2%  Critical: >10%",
             severity="Major",
             signalflow=f"""
-total = data("http.client.requests", {f}).count(over="2m")
-errors = data("http.client.requests", {f}, filter=filter("outcome", "SERVER_ERROR")).count(over="2m")
+total = data("http.client.requests", filter={f}).count(over="2m")
+errors = data("http.client.requests", filter={f} and filter("outcome", "SERVER_ERROR")).count(over="2m")
 error_pct = errors / total * 100
 detect(when(error_pct > 10), lasting="2m").publish("Critical")
 detect(when(error_pct > 2) and when(error_pct <= 10), lasting="2m").publish("Warning")

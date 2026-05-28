@@ -25,8 +25,8 @@ class FastAPITemplates:
             description="FastAPI HTTP 5xx error rate elevated. Warn: >1%  Critical: >5%",
             severity="Major",
             signalflow=f"""
-total = data("http.server.request.count", {f}).sum(over="2m")
-errors = data("http.server.request.count", {f}, filter=filter("http.status_code", "5*")).sum(over="2m")
+total = data("http.server.request.count", filter={f}).sum(over="2m")
+errors = data("http.server.request.count", filter={f} and filter("http.status_code", "5*")).sum(over="2m")
 error_pct = errors / total * 100
 detect(when(error_pct > 5), lasting="2m").publish("Critical")
 detect(when(error_pct > 1) and when(error_pct <= 5), lasting="2m").publish("Warning")
@@ -52,7 +52,7 @@ detect(when(error_pct > 1) and when(error_pct <= 5), lasting="2m").publish("Warn
             description=desc,
             severity="Major",
             signalflow=f"""
-A = data("http.server.duration", {f}).percentile(pct=99, over="5m")
+A = data("http.server.duration", filter={f}).percentile(pct=99, over="5m")
 detect(when(A > {anomaly_t}), lasting="5m").publish("Anomaly")
 detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("Warning")
 """.strip(),
@@ -69,8 +69,8 @@ detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("War
             description="FastAPI Pydantic validation errors (422) elevated — possible API contract mismatch or bad client payload",
             severity="Warning",
             signalflow=f"""
-total = data("http.server.request.count", {f}).sum(over="5m")
-val_errors = data("http.server.request.count", {f}, filter=filter("http.status_code", "422")).sum(over="5m")
+total = data("http.server.request.count", filter={f}).sum(over="5m")
+val_errors = data("http.server.request.count", filter={f} and filter("http.status_code", "422")).sum(over="5m")
 error_pct = val_errors / total * 100
 detect(when(error_pct > 5), lasting="5m").publish("Warning")
 """.strip(),
@@ -85,7 +85,7 @@ detect(when(error_pct > 5), lasting="5m").publish("Warning")
             description="FastAPI BackgroundTask exceptions detected — fire-and-forget tasks failing silently",
             severity="Warning",
             signalflow=f"""
-A = data("fastapi.background_task.exceptions", {f}).sum(over="5m")
+A = data("fastapi.background_task.exceptions", filter={f}).sum(over="5m")
 detect(when(A > 5), lasting="5m").publish("Warning")
 """.strip(),
             threshold_type="fixed",

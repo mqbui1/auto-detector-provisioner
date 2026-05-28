@@ -22,8 +22,8 @@ class AWSTemplates:
             description="AWS Lambda error rate elevated. Warn: >1%  Critical: >5%",
             severity="Major",
             signalflow=f"""
-errors = data("aws.lambda.errors", {f}).sum(over="5m")
-invocations = data("aws.lambda.invocations", {f}).sum(over="5m")
+errors = data("aws.lambda.errors", filter={f}).sum(over="5m")
+invocations = data("aws.lambda.invocations", filter={f}).sum(over="5m")
 error_rate = errors / invocations * 100
 detect(when(error_rate > 5), lasting="5m").publish("Critical")
 detect(when(error_rate > 1) and when(error_rate <= 5), lasting="5m").publish("Warning")
@@ -39,7 +39,7 @@ detect(when(error_rate > 1) and when(error_rate <= 5), lasting="5m").publish("Wa
             description="Lambda invocations being throttled — concurrent execution limit reached.",
             severity="Major",
             signalflow=f"""
-A = data("aws.lambda.throttles", {f}).sum(over="5m")
+A = data("aws.lambda.throttles", filter={f}).sum(over="5m")
 detect(when(A > 0), lasting="5m").publish("Warning")
 detect(when(A > 10), lasting="5m").publish("Critical")
 """.strip(),
@@ -54,8 +54,8 @@ detect(when(A > 10), lasting="5m").publish("Critical")
             description="Lambda cold start rate elevated — consider provisioned concurrency.",
             severity="Warning",
             signalflow=f"""
-A = data("aws.lambda.init_duration", {f}).count(over="5m")
-B = data("aws.lambda.invocations", {f}).sum(over="5m")
+A = data("aws.lambda.init_duration", filter={f}).count(over="5m")
+B = data("aws.lambda.invocations", filter={f}).sum(over="5m")
 cold_start_rate = A / B * 100
 detect(when(cold_start_rate > 20), lasting="10m").publish("Warning")
 """.strip(),
@@ -70,7 +70,7 @@ detect(when(cold_start_rate > 20), lasting="10m").publish("Warning")
             description="RDS database connections near instance limit. Warn: >80%  Critical: >95%",
             severity="Major",
             signalflow=f"""
-A = data("aws.rds.database_connections", {f}).mean(over="5m")
+A = data("aws.rds.database_connections", filter={f}).mean(over="5m")
 detect(when(A > 950), lasting="5m").publish("Critical")
 detect(when(A > 800) and when(A <= 950), lasting="5m").publish("Warning")
 """.strip(),
@@ -85,7 +85,7 @@ detect(when(A > 800) and when(A <= 950), lasting="5m").publish("Warning")
             description="RDS read replica lag elevated — reads from replica may return stale data. Warn: >30s  Critical: >120s",
             severity="Major",
             signalflow=f"""
-A = data("aws.rds.replica_lag", {f}).mean(over="5m")
+A = data("aws.rds.replica_lag", filter={f}).mean(over="5m")
 detect(when(A > 120), lasting="5m").publish("Critical")
 detect(when(A > 30) and when(A <= 120), lasting="5m").publish("Warning")
 """.strip(),
@@ -100,7 +100,7 @@ detect(when(A > 30) and when(A <= 120), lasting="5m").publish("Warning")
             description="SQS messages not being consumed in time — consumer may be falling behind. Warn: >300s  Critical: >900s",
             severity="Major",
             signalflow=f"""
-A = data("aws.sqs.approximate_age_of_oldest_message", {f}).mean(over="5m")
+A = data("aws.sqs.approximate_age_of_oldest_message", filter={f}).mean(over="5m")
 detect(when(A > 900), lasting="5m").publish("Critical")
 detect(when(A > 300) and when(A <= 900), lasting="5m").publish("Warning")
 """.strip(),
@@ -130,8 +130,8 @@ detect(when(A > 0), lasting="5m").publish("Warning")
             description="ECS service has fewer running tasks than desired count.",
             severity="Major",
             signalflow=f"""
-desired = data("aws.ecs.service.desired_count", {f}).mean(over="5m")
-running = data("aws.ecs.service.running_count", {f}).mean(over="5m")
+desired = data("aws.ecs.service.desired_count", filter={f}).mean(over="5m")
+running = data("aws.ecs.service.running_count", filter={f}).mean(over="5m")
 detect(when(running < desired), lasting="5m").publish("Warning")
 """.strip(),
             threshold_type="fixed",

@@ -56,9 +56,8 @@ class APMTemplates:
             ),
             severity="Major",
             signalflow=f"""
-_otel = data("service.request.duration", {f}, rollup="p99").mean(over="5m")
-_splunk = data("service.request.duration.ns.median", {f}).scale(0.000001).mean(over="5m")
-A = coalesce(_otel, _splunk)
+A = data("service.request.duration.ns.median", filter={f}).scale(0.000001).mean(over="5m")
+A.publish("A")
 detect(when(A > {anomaly_thresh}), lasting="5m").publish("Anomaly")
 detect(when(A > {warn_thresh}) and when(A <= {anomaly_thresh}), lasting="5m").publish("Warning")
 """.strip(),
@@ -103,9 +102,12 @@ detect(when(A > {warn_thresh}) and when(A <= {anomaly_thresh}), lasting="5m").pu
             ),
             severity="Major",
             signalflow=f"""
-A = data("service.request.count", {f}, filter("error", "true")).sum(over="5m")
-B = data("service.request.count", {f}).sum(over="5m")
+A = data("service.request.count", filter={f} and filter("sf_error", "true")).sum(over="5m").fill(0)
+B = data("service.request.count", filter={f}).sum(over="5m")
+A.publish("A")
+B.publish("B")
 error_rate = (A / B * 100)
+error_rate.publish("error_rate_pct")
 detect(when(error_rate > {anomaly_thresh_err}), lasting="5m").publish("Anomaly")
 detect(when(error_rate > {warn_thresh_err}) and when(error_rate <= {anomaly_thresh_err}), lasting="5m").publish("Warning")
 """.strip(),
@@ -136,7 +138,8 @@ detect(when(error_rate > {warn_thresh_err}) and when(error_rate <= {anomaly_thre
                 description=f"Service {service} request rate dropped >50% from baseline ({baseline.request_rate_per_min:.1f}/min)",
                 severity="Major",
                 signalflow=f"""
-A = data("service.request.count", {f}).sum(over="5m")
+A = data("service.request.count", filter={f}).sum(over="5m")
+A.publish("A")
 detect(when(A < {drop_thresh}), lasting="10m").publish("Warning")
 """.strip(),
                 threshold_type="dynamic",
@@ -150,7 +153,8 @@ detect(when(A < {drop_thresh}), lasting="10m").publish("Warning")
             description=f"Service {service} has stopped emitting trace data — possible silent failure or deployment issue.",
             severity="Critical",
             signalflow=f"""
-A = data("service.request.count", {f}).sum(over="10m")
+A = data("service.request.count", filter={f}).sum(over="10m")
+A.publish("A")
 detect(when(A is None), lasting="10m").publish("Critical")
 """.strip(),
             threshold_type="fixed",

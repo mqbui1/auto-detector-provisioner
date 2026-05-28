@@ -25,8 +25,8 @@ class GRPCTemplates:
             description="gRPC RPC error rate elevated (non-OK status codes). Warn: >1%  Critical: >5%",
             severity="Major",
             signalflow=f"""
-total = data("rpc.server.requests_per_rpc", {f}).sum(over="2m")
-errors = data("rpc.server.requests_per_rpc", {f}, filter=filter("rpc.grpc.status_code", "!0")).sum(over="2m")
+total = data("rpc.server.requests_per_rpc", filter={f}).sum(over="2m")
+errors = data("rpc.server.requests_per_rpc", filter={f} and filter("rpc.grpc.status_code", "!0")).sum(over="2m")
 error_pct = errors / total * 100
 detect(when(error_pct > 5), lasting="2m").publish("Critical")
 detect(when(error_pct > 1) and when(error_pct <= 5), lasting="2m").publish("Warning")
@@ -52,7 +52,7 @@ detect(when(error_pct > 1) and when(error_pct <= 5), lasting="2m").publish("Warn
             description=desc,
             severity="Major",
             signalflow=f"""
-A = data("rpc.server.duration", {f}).percentile(pct=99, over="5m")
+A = data("rpc.server.duration", filter={f}).percentile(pct=99, over="5m")
 detect(when(A > {anomaly_t}), lasting="5m").publish("Anomaly")
 detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("Warning")
 """.strip(),
@@ -68,8 +68,8 @@ detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("War
             description="gRPC DEADLINE_EXCEEDED errors elevated — downstream services may be slow or a timeout is too tight",
             severity="Major",
             signalflow=f"""
-total = data("rpc.server.requests_per_rpc", {f}).sum(over="5m")
-deadlines = data("rpc.server.requests_per_rpc", {f}, filter=filter("rpc.grpc.status_code", "4")).sum(over="5m")
+total = data("rpc.server.requests_per_rpc", filter={f}).sum(over="5m")
+deadlines = data("rpc.server.requests_per_rpc", filter={f} and filter("rpc.grpc.status_code", "4")).sum(over="5m")
 deadline_pct = deadlines / total * 100
 detect(when(deadline_pct > 5), lasting="5m").publish("Critical")
 detect(when(deadline_pct > 1) and when(deadline_pct <= 5), lasting="5m").publish("Warning")
@@ -86,7 +86,7 @@ detect(when(deadline_pct > 1) and when(deadline_pct <= 5), lasting="5m").publish
             description="gRPC UNAVAILABLE errors (status 14) — service unreachable or connection being reset",
             severity="Critical",
             signalflow=f"""
-A = data("rpc.server.requests_per_rpc", {f}, filter=filter("rpc.grpc.status_code", "14")).sum(over="2m")
+A = data("rpc.server.requests_per_rpc", filter={f} and filter("rpc.grpc.status_code", "14")).sum(over="2m")
 detect(when(A > 5), lasting="2m").publish("Critical")
 """.strip(),
             threshold_type="fixed",
@@ -101,8 +101,8 @@ detect(when(A > 5), lasting="2m").publish("Critical")
             description="gRPC client-initiated stream cancellations elevated — clients timing out or giving up on slow responses",
             severity="Warning",
             signalflow=f"""
-total = data("rpc.server.requests_per_rpc", {f}).sum(over="5m")
-cancelled = data("rpc.server.requests_per_rpc", {f}, filter=filter("rpc.grpc.status_code", "1")).sum(over="5m")
+total = data("rpc.server.requests_per_rpc", filter={f}).sum(over="5m")
+cancelled = data("rpc.server.requests_per_rpc", filter={f} and filter("rpc.grpc.status_code", "1")).sum(over="5m")
 cancel_pct = cancelled / total * 100
 detect(when(cancel_pct > 10), lasting="5m").publish("Warning")
 """.strip(),
@@ -117,8 +117,8 @@ detect(when(cancel_pct > 10), lasting="5m").publish("Warning")
             description="gRPC outbound (client-side) RPC error rate elevated — downstream dependency issues",
             severity="Major",
             signalflow=f"""
-total = data("rpc.client.requests_per_rpc", {f}).sum(over="2m")
-errors = data("rpc.client.requests_per_rpc", {f}, filter=filter("rpc.grpc.status_code", "!0")).sum(over="2m")
+total = data("rpc.client.requests_per_rpc", filter={f}).sum(over="2m")
+errors = data("rpc.client.requests_per_rpc", filter={f} and filter("rpc.grpc.status_code", "!0")).sum(over="2m")
 error_pct = errors / total * 100
 detect(when(error_pct > 5), lasting="2m").publish("Critical")
 detect(when(error_pct > 1) and when(error_pct <= 5), lasting="2m").publish("Warning")

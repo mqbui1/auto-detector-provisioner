@@ -24,8 +24,8 @@ class HTTPPatternsTemplates:
             description="HTTP 429 Too Many Requests rate elevated — possible client abuse, quota misconfiguration, or traffic spike exceeding limits. Warn: >2%  Critical: >10%",
             severity="Warning",
             signalflow=f"""
-total = data("service.request.count", {f}).sum(over="5m")
-rate_limited = data("service.request.count", {f}, filter=filter("http.status_code", "429")).sum(over="5m")
+total = data("service.request.count", filter={f}).sum(over="5m")
+rate_limited = data("service.request.count", filter={f} and filter("http.status_code", "429")).sum(over="5m")
 pct = rate_limited / total * 100
 detect(when(pct > 10), lasting="5m").publish("Critical")
 detect(when(pct > 2) and when(pct <= 10), lasting="5m").publish("Warning")
@@ -41,8 +41,8 @@ detect(when(pct > 2) and when(pct <= 10), lasting="5m").publish("Warning")
             description="HTTP 401 Unauthorized rate elevated — expired tokens, broken auth middleware, or credential rotation issue. Warn: >5%  Critical: >20%",
             severity="Major",
             signalflow=f"""
-total = data("service.request.count", {f}).sum(over="5m")
-auth_fails = data("service.request.count", {f}, filter=filter("http.status_code", "401")).sum(over="5m")
+total = data("service.request.count", filter={f}).sum(over="5m")
+auth_fails = data("service.request.count", filter={f} and filter("http.status_code", "401")).sum(over="5m")
 pct = auth_fails / total * 100
 detect(when(pct > 20), lasting="5m").publish("Critical")
 detect(when(pct > 5) and when(pct <= 20), lasting="5m").publish("Warning")
@@ -58,8 +58,8 @@ detect(when(pct > 5) and when(pct <= 20), lasting="5m").publish("Warning")
             description="HTTP 403 Forbidden rate elevated — RBAC misconfiguration, certificate issues, or IP allowlist change. Warn: >2%  Critical: >10%",
             severity="Major",
             signalflow=f"""
-total = data("service.request.count", {f}).sum(over="5m")
-authz_fails = data("service.request.count", {f}, filter=filter("http.status_code", "403")).sum(over="5m")
+total = data("service.request.count", filter={f}).sum(over="5m")
+authz_fails = data("service.request.count", filter={f} and filter("http.status_code", "403")).sum(over="5m")
 pct = authz_fails / total * 100
 detect(when(pct > 10), lasting="5m").publish("Critical")
 detect(when(pct > 2) and when(pct <= 10), lasting="5m").publish("Warning")
@@ -75,8 +75,8 @@ detect(when(pct > 2) and when(pct <= 10), lasting="5m").publish("Warning")
             description="HTTP 502/503/504 gateway errors elevated — upstream unavailable or timing out. Warn: >1%  Critical: >5%",
             severity="Major",
             signalflow=f"""
-total = data("service.request.count", {f}).sum(over="2m")
-gateway_errors = data("service.request.count", {f}, filter=filter("http.status_code", "502") or filter("http.status_code", "503") or filter("http.status_code", "504")).sum(over="2m")
+total = data("service.request.count", filter={f}).sum(over="2m")
+gateway_errors = data("service.request.count", filter={f} and filter("http.status_code", "502") or filter("http.status_code", "503") or filter("http.status_code", "504")).sum(over="2m")
 pct = gateway_errors / total * 100
 detect(when(pct > 5), lasting="2m").publish("Critical")
 detect(when(pct > 1) and when(pct <= 5), lasting="2m").publish("Warning")
@@ -105,7 +105,7 @@ class BatchJobTemplates:
             description="Batch / cron job reported a failure status — scheduled job did not complete successfully",
             severity="Major",
             signalflow=f"""
-A = data("batch.job.failed_count", {f}).sum(over="10m")
+A = data("batch.job.failed_count", filter={f}).sum(over="10m")
 detect(when(A > 0), lasting="5m").publish("Critical")
 """.strip(),
             threshold_type="fixed",
@@ -129,7 +129,7 @@ detect(when(A > 0), lasting="5m").publish("Critical")
             description=desc,
             severity="Warning",
             signalflow=f"""
-A = data("batch.job.duration", {f}).mean(over="10m")
+A = data("batch.job.duration", filter={f}).mean(over="10m")
 detect(when(A > {anomaly_t}), lasting="10m").publish("Anomaly")
 detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="10m").publish("Warning")
 """.strip(),
@@ -144,8 +144,9 @@ detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="10m").publish("Wa
             description="Batch / cron job has not run within expected window — possible scheduler failure or service crash",
             severity="Major",
             signalflow=f"""
-A = data("batch.job.last_success_timestamp", {f}).max(over="1h")
-detect(when(A < (now() - 3600000)), lasting="5m").publish("Critical")
+A = data("batch.job.last_success_timestamp", filter={f}).max(over="1h")
+threshold = data("batch.job.last_success_timestamp", filter={f}).max(over="2h").timeshift("1h")
+detect(when(A < threshold), lasting="5m").publish("Critical")
 """.strip(),
             threshold_type="fixed",
             confidence="low",
@@ -171,7 +172,7 @@ class ObservabilityQualityTemplates:
             description="OpenTelemetry span export failures — traces may be incomplete or missing from Splunk APM",
             severity="Warning",
             signalflow=f"""
-A = data("otelcol_exporter_send_failed_spans", {f}).sum(over="5m")
+A = data("otelcol_exporter_send_failed_spans", filter={f}).sum(over="5m")
 detect(when(A > 100), lasting="5m").publish("Warning")
 """.strip(),
             threshold_type="fixed",
@@ -185,8 +186,8 @@ detect(when(A > 100), lasting="5m").publish("Warning")
             description="Service metrics have stopped reporting — OTel collector may be down or service crashed",
             severity="Critical",
             signalflow=f"""
-A = data("service.request.count", {f}).sum(over="10m")
-detect(when(not A), lasting="10m").publish("Critical")
+A = data("service.request.count", filter={f}).sum(over="10m")
+detect(when(A is None), lasting="10m").publish("Critical")
 """.strip(),
             threshold_type="fixed",
             confidence="high",
@@ -199,8 +200,8 @@ detect(when(not A), lasting="10m").publish("Critical")
             description="OTel trace sampler dropping too many spans — sampling rate may be too aggressive, reducing observability coverage",
             severity="Warning",
             signalflow=f"""
-dropped = data("otelcol_processor_dropped_spans", {f}).sum(over="5m")
-total = data("otelcol_receiver_accepted_spans", {f}).sum(over="5m")
+dropped = data("otelcol_processor_dropped_spans", filter={f}).sum(over="5m")
+total = data("otelcol_receiver_accepted_spans", filter={f}).sum(over="5m")
 drop_pct = dropped / total * 100
 detect(when(drop_pct > 50), lasting="5m").publish("Warning")
 """.strip(),

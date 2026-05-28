@@ -23,8 +23,8 @@ class CeleryTemplates:
             description="Celery task failure rate elevated — background jobs failing. Warn: >2%  Critical: >10%",
             severity="Major",
             signalflow=f"""
-total = data("celery.task.total", {f}).sum(over="5m")
-failed = data("celery.task.total", {f}, filter=filter("state", "FAILURE")).sum(over="5m")
+total = data("celery.task.total", filter={f}).sum(over="5m")
+failed = data("celery.task.total", filter={f} and filter("state", "FAILURE")).sum(over="5m")
 failure_pct = failed / total * 100
 detect(when(failure_pct > 10), lasting="5m").publish("Critical")
 detect(when(failure_pct > 2) and when(failure_pct <= 10), lasting="5m").publish("Warning")
@@ -40,7 +40,7 @@ detect(when(failure_pct > 2) and when(failure_pct <= 10), lasting="5m").publish(
             description="Celery task queue depth elevated — workers not keeping up with task production. Warn: >100  Critical: >1000",
             severity="Major",
             signalflow=f"""
-A = data("celery.queue.length", {f}).max(over="5m")
+A = data("celery.queue.length", filter={f}).max(over="5m")
 detect(when(A > 1000), lasting="5m").publish("Critical")
 detect(when(A > 100) and when(A <= 1000), lasting="5m").publish("Warning")
 """.strip(),
@@ -55,7 +55,7 @@ detect(when(A > 100) and when(A <= 1000), lasting="5m").publish("Warning")
             description="Celery worker count dropped — tasks will queue with no processing",
             severity="Critical",
             signalflow=f"""
-A = data("celery.worker.online", {f}).sum(over="2m")
+A = data("celery.worker.online", filter={f}).sum(over="2m")
 detect(when(A < 1), lasting="2m").publish("Critical")
 """.strip(),
             threshold_type="fixed",
@@ -79,7 +79,7 @@ detect(when(A < 1), lasting="2m").publish("Critical")
             description=desc,
             severity="Warning",
             signalflow=f"""
-A = data("celery.task.duration", {f}).percentile(pct=95, over="5m")
+A = data("celery.task.duration", filter={f}).percentile(pct=95, over="5m")
 detect(when(A > {anomaly_t}), lasting="5m").publish("Anomaly")
 detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("Warning")
 """.strip(),
@@ -94,8 +94,8 @@ detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("War
             description="Celery task retry rate elevated — tasks failing transiently (network errors, rate limits, etc.)",
             severity="Warning",
             signalflow=f"""
-total = data("celery.task.total", {f}).sum(over="5m")
-retried = data("celery.task.total", {f}, filter=filter("state", "RETRY")).sum(over="5m")
+total = data("celery.task.total", filter={f}).sum(over="5m")
+retried = data("celery.task.total", filter={f} and filter("state", "RETRY")).sum(over="5m")
 retry_pct = retried / total * 100
 detect(when(retry_pct > 10), lasting="5m").publish("Warning")
 """.strip(),
@@ -110,7 +110,7 @@ detect(when(retry_pct > 10), lasting="5m").publish("Warning")
             description="Celery tasks being hard-killed by timeout — task logic needs optimization or timeout needs tuning",
             severity="Major",
             signalflow=f"""
-A = data("celery.task.timeout", {f}).sum(over="5m")
+A = data("celery.task.timeout", filter={f}).sum(over="5m")
 detect(when(A > 5), lasting="5m").publish("Warning")
 detect(when(A > 20), lasting="5m").publish("Critical")
 """.strip(),

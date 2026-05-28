@@ -23,8 +23,8 @@ class RedisTemplates:
             description="Redis cache hit rate dropped — possible cache thrashing or cold cache. Warn: <80%  Critical: <50%",
             severity="Warning",
             signalflow=f"""
-hits = data("redis.keyspace_hits", {f}).sum(over="5m")
-misses = data("redis.keyspace_misses", {f}).sum(over="5m")
+hits = data("redis.keyspace_hits", filter={f}).sum(over="5m")
+misses = data("redis.keyspace_misses", filter={f}).sum(over="5m")
 hit_rate = hits / (hits + misses) * 100
 detect(when(hit_rate < 50), lasting="5m").publish("Critical")
 detect(when(hit_rate < 80) and when(hit_rate >= 50), lasting="5m").publish("Warning")
@@ -40,7 +40,7 @@ detect(when(hit_rate < 80) and when(hit_rate >= 50), lasting="5m").publish("Warn
             description="Redis evicting keys at high rate — maxmemory limit may be too low.",
             severity="Major",
             signalflow=f"""
-A = data("redis.evicted_keys", {f}).rate(over="5m")
+A = data("redis.evicted_keys", filter={f}).mean(over="5m")
 detect(when(A > 100), lasting="5m").publish("Critical")
 detect(when(A > 10) and when(A <= 100), lasting="5m").publish("Warning")
 """.strip(),
@@ -55,8 +55,8 @@ detect(when(A > 10) and when(A <= 100), lasting="5m").publish("Warning")
             description="Redis connected clients near limit. Warn: >80%  Critical: >95%",
             severity="Major",
             signalflow=f"""
-connected = data("redis.connected_clients", {f}).mean(over="5m")
-max_clients = data("redis.maxclients", {f}).mean(over="5m")
+connected = data("redis.connected_clients", filter={f}).mean(over="5m")
+max_clients = data("redis.maxclients", filter={f}).mean(over="5m")
 conn_pct = connected / max_clients * 100
 detect(when(conn_pct > 95), lasting="2m").publish("Critical")
 detect(when(conn_pct > 80) and when(conn_pct <= 95), lasting="2m").publish("Warning")
@@ -83,7 +83,7 @@ detect(when(conn_pct > 80) and when(conn_pct <= 95), lasting="2m").publish("Warn
             description=f"Redis command latency elevated. Warn: >{warn_t}ms  Anomaly: >{anomaly_t}ms",
             severity="Warning",
             signalflow=f"""
-A = data("redis.latency", {f}).mean(over="5m")
+A = data("redis.latency", filter={f}).mean(over="5m")
 detect(when(A > {anomaly_t}), lasting="5m").publish("Anomaly")
 detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("Warning")
 """.strip(),
@@ -98,8 +98,8 @@ detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("War
             description="Redis memory usage near maxmemory limit. Warn: >75%  Critical: >90%",
             severity="Major",
             signalflow=f"""
-used = data("redis.used_memory", {f}).mean(over="5m")
-max_mem = data("redis.maxmemory", {f}).mean(over="5m")
+used = data("redis.used_memory", filter={f}).mean(over="5m")
+max_mem = data("redis.maxmemory", filter={f}).mean(over="5m")
 mem_pct = used / max_mem * 100
 detect(when(mem_pct > 90), lasting="5m").publish("Critical")
 detect(when(mem_pct > 75) and when(mem_pct <= 90), lasting="5m").publish("Warning")

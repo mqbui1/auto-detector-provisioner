@@ -24,7 +24,7 @@ class HostTemplates:
             description="Host CPU utilization elevated — service may be CPU-bound. Warn: >80%  Critical: >95%",
             severity="Major",
             signalflow=f"""
-A = data("cpu.utilization", {f}).mean(over="5m")
+A = data("cpu.utilization", filter={f}).mean(over="5m")
 detect(when(A > 95), lasting="5m").publish("Critical")
 detect(when(A > 80) and when(A <= 95), lasting="5m").publish("Warning")
 """.strip(),
@@ -40,7 +40,7 @@ detect(when(A > 80) and when(A <= 95), lasting="5m").publish("Warning")
             description="CPU steal time high — noisy neighbor on shared hypervisor stealing CPU cycles. Warn: >10%  Critical: >25%",
             severity="Warning",
             signalflow=f"""
-A = data("cpu.steal", {f}).mean(over="5m")
+A = data("cpu.steal", filter={f}).mean(over="5m")
 detect(when(A > 25), lasting="5m").publish("Critical")
 detect(when(A > 10) and when(A <= 25), lasting="5m").publish("Warning")
 """.strip(),
@@ -55,7 +55,7 @@ detect(when(A > 10) and when(A <= 25), lasting="5m").publish("Warning")
             description="Host memory utilization high — risk of OOM kills. Warn: >85%  Critical: >95%",
             severity="Major",
             signalflow=f"""
-used = data("memory.utilization", {f}).mean(over="5m")
+used = data("memory.utilization", filter={f}).mean(over="5m")
 detect(when(used > 95), lasting="5m").publish("Critical")
 detect(when(used > 85) and when(used <= 95), lasting="5m").publish("Warning")
 """.strip(),
@@ -70,7 +70,7 @@ detect(when(used > 85) and when(used <= 95), lasting="5m").publish("Warning")
             description="Host disk I/O utilization saturated — disk-bound workloads will experience latency. Warn: >80%  Critical: >95%",
             severity="Major",
             signalflow=f"""
-A = data("disk.io.utilization", {f}).mean(over="5m")
+A = data("disk.io.utilization", filter={f}).mean(over="5m")
 detect(when(A > 95), lasting="5m").publish("Critical")
 detect(when(A > 80) and when(A <= 95), lasting="5m").publish("Warning")
 """.strip(),
@@ -85,7 +85,7 @@ detect(when(A > 80) and when(A <= 95), lasting="5m").publish("Warning")
             description="Host disk free space critically low. Warn: <20%  Critical: <5%",
             severity="Major",
             signalflow=f"""
-A = data("disk.summary_utilization", {f}).max(over="5m")
+A = data("disk.summary_utilization", filter={f}).max(over="5m")
 detect(when(A > 95), lasting="5m").publish("Critical")
 detect(when(A > 80) and when(A <= 95), lasting="5m").publish("Warning")
 """.strip(),
@@ -100,7 +100,7 @@ detect(when(A > 80) and when(A <= 95), lasting="5m").publish("Warning")
             description="Host network packet loss or errors elevated — network fabric issues affecting service communication",
             severity="Major",
             signalflow=f"""
-errors = data("network.total_packets_dropped", {f}).rate(over="5m")
+errors = data("network.total_packets_dropped", filter={f}).mean(over="5m")
 detect(when(errors > 100), lasting="5m").publish("Critical")
 detect(when(errors > 10) and when(errors <= 100), lasting="5m").publish("Warning")
 """.strip(),
@@ -115,8 +115,8 @@ detect(when(errors > 10) and when(errors <= 100), lasting="5m").publish("Warning
             description="Host open file descriptors near system limit — service may fail to open new connections or files. Warn: >80%  Critical: >95%",
             severity="Major",
             signalflow=f"""
-used = data("process.max_fds", {f}).mean(over="5m")
-limit = data("system.max_fds", {f}).mean(over="5m")
+used = data("process.max_fds", filter={f}).mean(over="5m")
+limit = data("system.max_fds", filter={f}).mean(over="5m")
 fd_pct = used / limit * 100
 detect(when(fd_pct > 95), lasting="5m").publish("Critical")
 detect(when(fd_pct > 80) and when(fd_pct <= 95), lasting="5m").publish("Warning")

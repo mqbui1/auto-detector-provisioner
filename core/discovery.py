@@ -152,9 +152,17 @@ def _api_get(api_base: str, token: str, path: str, params: dict | None = None) -
     req = urllib.request.Request(url, headers={"X-SF-Token": token, "Accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            chunks = []
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            return json.loads(b"".join(chunks).decode("utf-8"))
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"HTTP {e.code}: {(e.read() or b'')[:300].decode()}")
+    except Exception as e:
+        raise RuntimeError(f"Request failed: {e}")
 
 
 def _gql_post(app_base: str, token: str, op: str, body: dict) -> dict:

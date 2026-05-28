@@ -23,8 +23,8 @@ class FlaskTemplates:
             description="Flask HTTP 5xx error rate elevated. Warn: >1%  Critical: >5%",
             severity="Major",
             signalflow=f"""
-total = data("http.server.request.count", {f}).sum(over="2m")
-errors = data("http.server.request.count", {f}, filter=filter("http.status_code", "5*")).sum(over="2m")
+total = data("http.server.request.count", filter={f}).sum(over="2m")
+errors = data("http.server.request.count", filter={f} and filter("http.status_code", "5*")).sum(over="2m")
 error_pct = errors / total * 100
 detect(when(error_pct > 5), lasting="2m").publish("Critical")
 detect(when(error_pct > 1) and when(error_pct <= 5), lasting="2m").publish("Warning")
@@ -50,7 +50,7 @@ detect(when(error_pct > 1) and when(error_pct <= 5), lasting="2m").publish("Warn
             description=desc,
             severity="Major",
             signalflow=f"""
-A = data("http.server.duration", {f}).percentile(pct=99, over="5m")
+A = data("http.server.duration", filter={f}).percentile(pct=99, over="5m")
 detect(when(A > {anomaly_t}), lasting="5m").publish("Anomaly")
 detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("Warning")
 """.strip(),
@@ -65,7 +65,7 @@ detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("War
             description="Flask unhandled exceptions (500 errors from exceptions) — check application logs",
             severity="Major",
             signalflow=f"""
-A = data("http.server.request.count", {f}, filter=filter("http.status_code", "500")).sum(over="5m")
+A = data("http.server.request.count", filter={f} and filter("http.status_code", "500")).sum(over="5m")
 detect(when(A > 10), lasting="5m").publish("Warning")
 detect(when(A > 50), lasting="2m").publish("Critical")
 """.strip(),
@@ -81,7 +81,7 @@ detect(when(A > 50), lasting="2m").publish("Critical")
             description="Flask active concurrent requests high — WSGI workers may be saturated. Warn: >50  Critical: >100",
             severity="Warning",
             signalflow=f"""
-A = data("http.server.active_requests", {f}).mean(over="2m")
+A = data("http.server.active_requests", filter={f}).mean(over="2m")
 detect(when(A > 100), lasting="2m").publish("Critical")
 detect(when(A > 50) and when(A <= 100), lasting="2m").publish("Warning")
 """.strip(),

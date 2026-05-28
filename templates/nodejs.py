@@ -24,7 +24,7 @@ class NodeJSTemplates:
             description="Node.js event loop lag elevated — I/O blocking or CPU-intensive work on main thread. Warn: >100ms  Critical: >500ms",
             severity="Major",
             signalflow=f"""
-A = data("nodejs.eventloop.delay.mean", {f_rt}).mean(over="5m")
+A = data("nodejs.eventloop.delay.mean", filter={f_rt}).mean(over="5m")
 detect(when(A > 500), lasting="5m").publish("Critical")
 detect(when(A > 100) and when(A <= 500), lasting="5m").publish("Warning")
 """.strip(),
@@ -49,7 +49,7 @@ detect(when(A > 100) and when(A <= 500), lasting="5m").publish("Warning")
             description="Node.js event loop utilization near saturation — main thread overloaded. Warn: >80%  Critical: >95%",
             severity="Major",
             signalflow=f"""
-A = data("nodejs.eventloop.utilization", {f_rt}).mean(over="5m") * 100
+A = data("nodejs.eventloop.utilization", filter={f_rt}).mean(over="5m") * 100
 detect(when(A > 95), lasting="5m").publish("Critical")
 detect(when(A > 80) and when(A <= 95), lasting="5m").publish("Warning")
 """.strip(),

@@ -24,7 +24,7 @@ class ElasticsearchTemplates:
             description="Elasticsearch cluster status is yellow (replica unassigned) or red (primary unassigned). Red = data loss risk.",
             severity="Critical",
             signalflow=f"""
-A = data("elasticsearch.cluster.health", {f}).max(over="2m")
+A = data("elasticsearch.cluster.health", filter={f}).max(over="2m")
 detect(when(A >= 2), lasting="2m").publish("Critical")
 detect(when(A == 1), lasting="5m").publish("Warning")
 """.strip(),
@@ -39,7 +39,7 @@ detect(when(A == 1), lasting="5m").publish("Warning")
             description="Elasticsearch unassigned shards detected — data unavailability or node failure",
             severity="Major",
             signalflow=f"""
-A = data("elasticsearch.cluster.shards.unassigned", {f}).max(over="5m")
+A = data("elasticsearch.cluster.shards.unassigned", filter={f}).max(over="5m")
 detect(when(A > 0), lasting="5m").publish("Critical")
 """.strip(),
             threshold_type="fixed",
@@ -54,8 +54,8 @@ detect(when(A > 0), lasting="5m").publish("Critical")
             description="Elasticsearch JVM heap usage high — above 75% risks GC pressure and node instability. Warn: >75%  Critical: >90%",
             severity="Major",
             signalflow=f"""
-used = data("elasticsearch.node.jvm.memory.heap.used", {f}).mean(over="5m")
-max_h = data("elasticsearch.node.jvm.memory.heap.max", {f}).mean(over="5m")
+used = data("elasticsearch.node.jvm.memory.heap.used", filter={f}).mean(over="5m")
+max_h = data("elasticsearch.node.jvm.memory.heap.max", filter={f}).mean(over="5m")
 heap_pct = used / max_h * 100
 detect(when(heap_pct > 90), lasting="5m").publish("Critical")
 detect(when(heap_pct > 75) and when(heap_pct <= 90), lasting="5m").publish("Warning")
@@ -81,7 +81,7 @@ detect(when(heap_pct > 75) and when(heap_pct <= 90), lasting="5m").publish("Warn
             description=desc,
             severity="Major",
             signalflow=f"""
-A = data("elasticsearch.node.search.latency", {f}).mean(over="5m")
+A = data("elasticsearch.node.search.latency", filter={f}).mean(over="5m")
 detect(when(A > {anomaly_t}), lasting="5m").publish("Anomaly")
 detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("Warning")
 """.strip(),
@@ -96,7 +96,7 @@ detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("War
             description="Elasticsearch index operation latency elevated — possible disk I/O bottleneck or merge pressure. Warn: >50ms  Critical: >200ms",
             severity="Warning",
             signalflow=f"""
-A = data("elasticsearch.node.index.latency", {f}).mean(over="5m")
+A = data("elasticsearch.node.index.latency", filter={f}).mean(over="5m")
 detect(when(A > 200), lasting="5m").publish("Critical")
 detect(when(A > 50) and when(A <= 200), lasting="5m").publish("Warning")
 """.strip(),
@@ -111,7 +111,7 @@ detect(when(A > 50) and when(A <= 200), lasting="5m").publish("Warning")
             description="Elasticsearch thread pool rejections — search or bulk queue saturated, requests being dropped",
             severity="Critical",
             signalflow=f"""
-A = data("elasticsearch.node.thread_pool.rejected", {f}).sum(over="5m")
+A = data("elasticsearch.node.thread_pool.rejected", filter={f}).sum(over="5m")
 detect(when(A > 0), lasting="2m").publish("Critical")
 """.strip(),
             threshold_type="fixed",
@@ -125,7 +125,7 @@ detect(when(A > 0), lasting="2m").publish("Critical")
             description="Elasticsearch pending cluster tasks elevated — master node overloaded or stalled. Warn: >10  Critical: >50",
             severity="Warning",
             signalflow=f"""
-A = data("elasticsearch.cluster.pending_tasks", {f}).max(over="5m")
+A = data("elasticsearch.cluster.pending_tasks", filter={f}).max(over="5m")
 detect(when(A > 50), lasting="5m").publish("Critical")
 detect(when(A > 10) and when(A <= 50), lasting="5m").publish("Warning")
 """.strip(),

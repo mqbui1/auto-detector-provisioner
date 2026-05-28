@@ -42,8 +42,10 @@ from pathlib import Path
 
 from core.discovery import discover_services
 from core.baseline_learner import learn_baseline, load_baseline
-from core.detector_generator import generate_detectors, format_dry_run_report, format_html_report
-from core.detector_deployer import deploy_detectors, format_deploy_summary
+from core.detector_generator import generate_detectors, format_dry_run_report
+from core.detector_deployer import deploy_detectors, reconcile_detectors, format_deploy_summary
+from core.html_report import generate_html_report, _det_id
+from core.report_server import ReportServer
 from core.state import ProvisionerState, DetectorRecord, STATE_FILE
 from core.retune import retune_service, baseline_hash, signalflow_hash, format_retune_summary
 from core.mute import mute_service, unmute_service, list_active_mutes, format_mute_list
@@ -78,12 +80,19 @@ def parse_args() -> argparse.Namespace:
     deploy = parser.add_argument_group("deployment")
     deploy.add_argument("--auto-deploy", action="store_true",
                         help="Deploy detectors automatically (default: dry run only)")
+    deploy.add_argument("--html-report", metavar="FILE",
+                        help="Write interactive HTML report to FILE and open in browser "
+                             "(keeps a local server running so you can deploy from the UI)")
+    deploy.add_argument("--report-port", type=int, default=7777, metavar="PORT",
+                        help="Local port for the HTML report deploy server (default: 7777)")
     deploy.add_argument("--include-low-confidence", action="store_true",
                         help="Include low-confidence detectors (heuristic-based)")
     deploy.add_argument("--state-file", type=Path, default=STATE_FILE,
                         help="Path to provisioner state file (default: data/provisioned_state.json)")
     deploy.add_argument("--force-reprovision", action="store_true",
                         help="Re-provision even if service is already in state")
+    deploy.add_argument("--reconcile", action="store_true",
+                        help="Diff existing detectors against current templates and update only changed ones")
 
     lifecycle = parser.add_argument_group("lifecycle")
     lifecycle.add_argument("--retune", action="store_true",
@@ -238,7 +247,8 @@ def main() -> int:
 
     total_actioned = 0
     total_failed = 0
-    html_data: list[tuple] = []  # (profile, detectors, baseline) for HTML report
+    # Accumulate (profile, detectors, baseline) for HTML report
+    html_report_data: list[tuple] = []
 
     for profile in profiles:
         print(f"\nProcessing: {profile.service} (env={profile.environment})", file=sys.stderr)
@@ -277,33 +287,32 @@ def main() -> int:
             continue
 
         # ── Provision mode ────────────────────────────────────────────────────
-        if state.is_provisioned(profile.service, profile.environment) and not args.force_reprovision:
-            print(f"  Already provisioned — skipping (use --force-reprovision to override)", file=sys.stderr)
+        if state.is_provisioned(profile.service, profile.environment) and not args.force_reprovision and not args.reconcile:
+            print(f"  Already provisioned — skipping (use --force-reprovision or --reconcile to update)", file=sys.stderr)
             continue
 
-        # Learn baseline
+        # Learn baseline — always try cache first; only skip API call if --skip-baseline
         baseline = None
-        if not args.skip_baseline:
+        baseline_path = args.baseline_dir / f"{profile.environment}__{profile.service}.json"
+        baseline = load_baseline(baseline_path)
+        if baseline:
+            print(f"  Using cached baseline ({baseline.window_hours}h window)", file=sys.stderr)
+        elif not args.skip_baseline:
             print("  Learning baseline...", file=sys.stderr)
-            baseline_path = args.baseline_dir / f"{profile.environment}__{profile.service}.json"
-            baseline = load_baseline(baseline_path)
-            if baseline:
-                print(f"  Using cached baseline ({baseline.window_hours}h window)", file=sys.stderr)
-            else:
-                baseline = learn_baseline(
-                    realm=args.realm, token=args.token,
-                    service=profile.service, environment=profile.environment,
-                    window_hours=args.baseline_window_hours,
-                    output_dir=args.baseline_dir,
-                )
-            if baseline.is_reliable():
-                err_pct = baseline.error_rate_pct or 0.0
-                print(f"  Baseline: latency={baseline.latency_mean_ms:.1f}ms "
-                      f"error_rate={err_pct:.2f}% "
-                      f"samples={baseline.sample_count}", file=sys.stderr)
-            else:
-                print(f"  Baseline: insufficient samples — using fixed thresholds", file=sys.stderr)
-                baseline = None
+            baseline = learn_baseline(
+                realm=args.realm, token=args.token,
+                service=profile.service, environment=profile.environment,
+                window_hours=args.baseline_window_hours,
+                output_dir=args.baseline_dir,
+            )
+        if baseline and baseline.is_reliable():
+            err_str = f"{baseline.error_rate_pct:.2f}%" if baseline.error_rate_pct is not None else "n/a"
+            print(f"  Baseline: latency={baseline.latency_mean_ms:.1f}ms "
+                  f"error_rate={err_str} "
+                  f"samples={baseline.sample_count}", file=sys.stderr)
+        else:
+            print(f"  Baseline: insufficient samples — using fixed thresholds", file=sys.stderr)
+            baseline = None
 
         # Generate (with metric existence probe to drop ghost detectors)
         detectors = generate_detectors(
@@ -314,14 +323,23 @@ def main() -> int:
             token=args.token,
         )
         print(format_dry_run_report(profile, detectors, baseline))
-        html_data.append((profile, detectors, baseline))
 
-        # Deploy
-        results = deploy_detectors(
-            realm=args.realm, token=args.token,
-            service=profile.service, environment=profile.environment,
-            detectors=detectors, dry_run=dry_run,
-        )
+        # Collect for HTML report
+        html_report_data.append((profile, detectors, baseline))
+
+        # Deploy or reconcile
+        if args.reconcile:
+            results = reconcile_detectors(
+                realm=args.realm, token=args.token,
+                service=profile.service, environment=profile.environment,
+                detectors=detectors, dry_run=dry_run,
+            )
+        else:
+            results = deploy_detectors(
+                realm=args.realm, token=args.token,
+                service=profile.service, environment=profile.environment,
+                detectors=detectors, dry_run=dry_run,
+            )
         print(format_deploy_summary(results, dry_run))
 
         # Record in state
@@ -351,6 +369,47 @@ def main() -> int:
 
         total_actioned += sum(1 for r in results if r.success)
         total_failed += sum(1 for r in results if not r.success)
+
+    # ── HTML report ───────────────────────────────────────────────────────────
+    if args.html_report and html_report_data:
+        import datetime
+        report_path = Path(args.html_report)
+        generated_at = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+
+        # Build detector lookup maps for the deploy server
+        detector_map: dict[str, object] = {}
+        detector_context: dict[str, tuple[str, str]] = {}
+        for profile, dets, _ in html_report_data:
+            for det in dets:
+                did = _det_id(profile.service, det.name)
+                detector_map[did] = det
+                detector_context[did] = (profile.service, profile.environment)
+
+        html_content = generate_html_report(
+            profiles_detectors=html_report_data,
+            realm=args.realm,
+            environment=args.environment or "all",
+            generated_at=generated_at,
+            server_port=args.report_port,
+            dry_run=dry_run,
+        )
+        report_path.write_text(html_content, encoding="utf-8")
+        print(f"\nHTML report written to: {report_path}", file=sys.stderr)
+
+        server = ReportServer(
+            realm=args.realm,
+            token=args.token,
+            detector_map=detector_map,
+            detector_context=detector_context,
+            report_path=report_path,
+            port=args.report_port,
+        )
+        server.start()
+        server.open_browser()
+        print(f"Deploy server running on http://127.0.0.1:{args.report_port}", file=sys.stderr)
+        print("Use the 'Deploy Selected' button in the report to deploy detectors.", file=sys.stderr)
+        print("Press Ctrl-C to stop.\n", file=sys.stderr)
+        server.wait()
 
     # ── Final summary ─────────────────────────────────────────────────────────
     print(f"\n{'='*60}", file=sys.stderr)

@@ -23,8 +23,8 @@ class KubernetesTemplates:
             description="Pod restart rate abnormally high — possible crash loop. Warn: >2/5min  Critical: >5/5min",
             severity="Major",
             signalflow=f"""
-A = data("k8s.pod.phase", {f}, filter("phase", "Running")).count()
-restarts = data("k8s.container.restarts", {f}).sum(over="5m")
+A = data("k8s.pod.phase", filter={f} and filter("phase", "Running")).count()
+restarts = data("k8s.container.restarts", filter={f}).sum(over="5m")
 detect(when(restarts > 5), lasting="5m").publish("Critical")
 detect(when(restarts > 2) and when(restarts <= 5), lasting="5m").publish("Warning")
 """.strip(),
@@ -39,7 +39,7 @@ detect(when(restarts > 2) and when(restarts <= 5), lasting="5m").publish("Warnin
             description="Container was OOMKilled — memory limit too low or memory leak.",
             severity="Critical",
             signalflow=f"""
-A = data("k8s.container.restarts", {f}, filter("reason", "OOMKilled")).sum(over="10m")
+A = data("k8s.container.restarts", filter={f} and filter("reason", "OOMKilled")).sum(over="10m")
 detect(when(A > 0), lasting="1m").publish("Critical")
 """.strip(),
             threshold_type="fixed",
@@ -54,8 +54,8 @@ detect(when(A > 0), lasting="1m").publish("Critical")
             description="Container CPU being throttled — CPU limit may be too low. Warn: >25%  Critical: >50%",
             severity="Warning",
             signalflow=f"""
-throttled = data("container.cpu.throttling_data.throttled_time", {f}).sum(over="5m")
-total = data("container.cpu.throttling_data.total_elapsed_time", {f}).sum(over="5m")
+throttled = data("container.cpu.throttling_data.throttled_time", filter={f}).sum(over="5m")
+total = data("container.cpu.throttling_data.total_elapsed_time", filter={f}).sum(over="5m")
 throttle_pct = throttled / total * 100
 detect(when(throttle_pct > 50), lasting="5m").publish("Critical")
 detect(when(throttle_pct > 25) and when(throttle_pct <= 50), lasting="5m").publish("Warning")
@@ -71,8 +71,8 @@ detect(when(throttle_pct > 25) and when(throttle_pct <= 50), lasting="5m").publi
             description="HPA has reached max replicas — service may be unable to scale further under load.",
             severity="Warning",
             signalflow=f"""
-current = data("k8s.hpa.current_replicas", {f}).mean(over="5m")
-max_r = data("k8s.hpa.max_replicas", {f}).mean(over="5m")
+current = data("k8s.hpa.current_replicas", filter={f}).mean(over="5m")
+max_r = data("k8s.hpa.max_replicas", filter={f}).mean(over="5m")
 detect(when(current >= max_r), lasting="10m").publish("Warning")
 """.strip(),
             threshold_type="fixed",
@@ -86,7 +86,7 @@ detect(when(current >= max_r), lasting="10m").publish("Warning")
             description="Pods stuck in Pending — possible resource quota exhaustion or node pressure.",
             severity="Major",
             signalflow=f"""
-A = data("k8s.pod.phase", {f}, filter("phase", "Pending")).count()
+A = data("k8s.pod.phase", filter={f} and filter("phase", "Pending")).count()
 detect(when(A > 0), lasting="5m").publish("Warning")
 """.strip(),
             threshold_type="fixed",
@@ -100,8 +100,8 @@ detect(when(A > 0), lasting="5m").publish("Warning")
             description="Fewer running pods than desired — deployment may be degraded.",
             severity="Major",
             signalflow=f"""
-desired = data("k8s.deployment.desired", {f}).mean(over="5m")
-available = data("k8s.deployment.available", {f}).mean(over="5m")
+desired = data("k8s.deployment.desired", filter={f}).mean(over="5m")
+available = data("k8s.deployment.available", filter={f}).mean(over="5m")
 detect(when(available < desired), lasting="5m").publish("Warning")
 """.strip(),
             threshold_type="fixed",

@@ -65,13 +65,26 @@ def _api_get(api_base: str, token: str, path: str, params: dict | None = None) -
     req = urllib.request.Request(url, headers={"X-SF-Token": token, "Accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            chunks = []
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            return json.loads(b"".join(chunks).decode("utf-8"))
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"HTTP {e.code}: {(e.read() or b'')[:300].decode()}")
+    except Exception as e:
+        raise RuntimeError(f"Request failed: {e}")
 
 
 def _execute_signalflow(api_base: str, token: str, program: str, start_ms: int, end_ms: int, resolution_ms: int = 60000) -> list[float]:
-    """Execute a SignalFlow program and return the data points."""
+    """Execute a SignalFlow program and return the data points.
+
+    The API returns Server-Sent Events (SSE). Each SSE message spans multiple
+    lines of the form "data: <fragment>" separated by blank lines. We must
+    accumulate all data: fragments per message before JSON-parsing them.
+    """
     qs = urllib.parse.urlencode({
         "start": start_ms,
         "stop": end_ms,
@@ -79,39 +92,37 @@ def _execute_signalflow(api_base: str, token: str, program: str, start_ms: int, 
         "immediate": "true",
     })
     url = f"{api_base}/v2/signalflow/execute?{qs}"
-    body = program.encode("utf-8")
     req = urllib.request.Request(
-        url, data=body,
+        url, data=program.encode("utf-8"),
         headers={"X-SF-Token": token, "Content-Type": "text/plain"},
         method="POST",
     )
     values = []
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
-            raw = resp.read().decode("utf-8")
-        # SSE format: each event is separated by blank lines.
-        # Each event has "event: <type>" and one or more "data: <line>" lines.
-        # We collect data: lines, strip the prefix, join them, then parse as JSON.
-        current_event = ""
-        data_lines: list[str] = []
-        for line in raw.splitlines():
-            if line.startswith("event:"):
-                current_event = line[6:].strip()
-                data_lines = []
-            elif line.startswith("data:"):
-                data_lines.append(line[5:].strip())
-            elif line == "" and data_lines:
-                # End of event block — parse if it's a data event
-                if current_event == "data":
-                    try:
-                        msg = json.loads("\n".join(data_lines))
-                        for ts_data in (msg.get("data") or []):
-                            v = ts_data.get("value")
-                            if v is not None:
-                                values.append(float(v))
-                    except Exception:
-                        pass
-                data_lines = []
+            current_event: str | None = None
+            data_lines: list[str] = []
+
+            for raw in resp:
+                line = raw.rstrip(b"\r\n")
+                if line.startswith(b"event:"):
+                    current_event = line[6:].strip().decode("utf-8", errors="replace")
+                elif line.startswith(b"data:"):
+                    data_lines.append(line[5:].strip().decode("utf-8", errors="replace"))
+                elif line == b"":
+                    # Blank line = end of SSE message; parse accumulated data lines
+                    if data_lines:
+                        try:
+                            msg = json.loads("\n".join(data_lines))
+                            if current_event == "data":
+                                for ts_data in (msg.get("data") or []):
+                                    v = ts_data.get("value")
+                                    if v is not None:
+                                        values.append(float(v))
+                        except Exception:
+                            pass
+                    current_event = None
+                    data_lines = []
     except Exception as e:
         logger.warning("SignalFlow execution failed: %s", e)
     return values
@@ -147,7 +158,7 @@ def _learn_apm_baseline(api_base: str, token: str, service: str, environment: st
         "service.request.duration.ns.median",         # Splunk APM (nanoseconds)
         "spans.duration.ns.median",                   # Splunk APM spans metric
     ]:
-        prog = f'data("{latency_metric}", {base_filter}).mean().publish()'
+        prog = f'data("{latency_metric}", filter={base_filter}).mean().publish()'
         vals = _execute_signalflow(api_base, token, prog, start_ms, now_ms)
         if vals and any(v > 0 for v in vals):
             # Convert nanoseconds to milliseconds if metric name indicates ns
@@ -159,14 +170,12 @@ def _learn_apm_baseline(api_base: str, token: str, service: str, environment: st
 
     # Error rate — try OTel count with error filter, fall back to Splunk APM error metric
     error_values: list[float] = []
-    err_filter = f'filter("error", "true") and {base_filter}'
-    sf_err_filter = f'filter("sf_error", "true") and {base_filter}'
     for err_prog in [
-        (f'A = data("service.request.count", {err_filter}).sum()\n'
-         f'B = data("service.request.count", {base_filter}).sum()\n'
+        (f'A = data("service.request.count", filter={base_filter} and filter("sf_error", "true")).sum()\n'
+         f'B = data("service.request.count", filter={base_filter}).sum()\n'
          f'(A/B * 100).publish()'),
-        (f'A = data("spans.count", {sf_err_filter}).sum()\n'
-         f'B = data("spans.count", {base_filter}).sum()\n'
+        (f'A = data("spans.count", filter={base_filter} and filter("sf_error", "true")).sum()\n'
+         f'B = data("spans.count", filter={base_filter}).sum()\n'
          f'(A/B * 100).publish()'),
     ]:
         vals = _execute_signalflow(api_base, token, err_prog, start_ms, now_ms)
@@ -190,7 +199,8 @@ def _learn_metric_baseline(api_base: str, token: str, metric: str, service: str,
     env_filter = f'filter("sf_environment", "{environment}") and ' if environment else ""
     svc_filter = f'filter("sf_service", "{service}") and ' if service else ""
 
-    program = f'data("{metric}", {env_filter}{svc_filter}True).mean().publish()'
+    combined = f"{env_filter}{svc_filter}".rstrip(" and ")
+    program = f'data("{metric}", filter={combined}).mean().publish()' if combined else f'data("{metric}").mean().publish()'
     return _execute_signalflow(api_base, token, program, start_ms, now_ms)
 
 
@@ -288,16 +298,34 @@ def _save_baseline(baseline: ServiceBaseline, path: Path) -> None:
     path.write_text(json.dumps(data, indent=2))
 
 
+_BASELINE_TTL_DAYS = 7
+_BASELINE_MIN_SAMPLES = 100
+
+
 def load_baseline(path: Path) -> ServiceBaseline | None:
     if not path.exists():
         return None
     data = json.loads(path.read_text())
+    learned_at = data.get("learned_at", 0)
+    sample_count = data.get("sample_count", 0)
+
+    # Invalidate stale or low-quality baselines
+    age_days = (time.time() - learned_at) / 86400
+    if age_days > _BASELINE_TTL_DAYS:
+        logger.info("Baseline: cache expired (%.1f days old, TTL=%dd) — will re-learn",
+                    age_days, _BASELINE_TTL_DAYS)
+        return None
+    if sample_count < _BASELINE_MIN_SAMPLES:
+        logger.info("Baseline: cache rejected (sample_count=%d < min=%d) — will re-learn",
+                    sample_count, _BASELINE_MIN_SAMPLES)
+        return None
+
     baseline = ServiceBaseline(
         service=data["service"],
         environment=data["environment"],
-        learned_at=data.get("learned_at", 0),
+        learned_at=learned_at,
         window_hours=data.get("window_hours", 24),
-        sample_count=data.get("sample_count", 0),
+        sample_count=sample_count,
         latency_mean_ms=data.get("latency_mean_ms"),
         latency_p99_ms=data.get("latency_p99_ms"),
         latency_stddev_ms=data.get("latency_stddev_ms"),

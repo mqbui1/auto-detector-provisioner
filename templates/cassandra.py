@@ -33,7 +33,7 @@ class CassandraTemplates:
             description=desc,
             severity="Major",
             signalflow=f"""
-A = data("cassandra.client.request.latency", {f}, filter=filter("operation", "read")).percentile(pct=99, over="5m")
+A = data("cassandra.client.request.latency", filter={f} and filter("operation", "read")).percentile(pct=99, over="5m")
 detect(when(A > {anomaly_t}), lasting="5m").publish("Anomaly")
 detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("Warning")
 """.strip(),
@@ -48,7 +48,7 @@ detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("War
             description="Cassandra write latency high — possible compaction pressure or disk saturation. Warn: >10ms  Critical: >50ms",
             severity="Major",
             signalflow=f"""
-A = data("cassandra.client.request.latency", {f}, filter=filter("operation", "write")).percentile(pct=99, over="5m")
+A = data("cassandra.client.request.latency", filter={f} and filter("operation", "write")).percentile(pct=99, over="5m")
 detect(when(A > 50), lasting="5m").publish("Critical")
 detect(when(A > 10) and when(A <= 50), lasting="5m").publish("Warning")
 """.strip(),
@@ -64,7 +64,7 @@ detect(when(A > 10) and when(A <= 50), lasting="5m").publish("Warning")
             description="Cassandra dropped mutations — write requests dropped due to overload. Data loss risk.",
             severity="Critical",
             signalflow=f"""
-A = data("cassandra.dropped.messages", {f}, filter=filter("message_type", "MUTATION")).sum(over="5m")
+A = data("cassandra.dropped.messages", filter={f} and filter("message_type", "MUTATION")).sum(over="5m")
 detect(when(A > 0), lasting="2m").publish("Critical")
 """.strip(),
             threshold_type="fixed",
@@ -78,7 +78,7 @@ detect(when(A > 0), lasting="2m").publish("Critical")
             description="Cassandra compaction pending tasks elevated — read performance will degrade as SSTables accumulate. Warn: >30  Critical: >100",
             severity="Warning",
             signalflow=f"""
-A = data("cassandra.compaction.tasks.pending", {f}).max(over="5m")
+A = data("cassandra.compaction.tasks.pending", filter={f}).max(over="5m")
 detect(when(A > 100), lasting="5m").publish("Critical")
 detect(when(A > 30) and when(A <= 100), lasting="5m").publish("Warning")
 """.strip(),
@@ -93,8 +93,8 @@ detect(when(A > 30) and when(A <= 100), lasting="5m").publish("Warning")
             description="Cassandra JVM heap usage high — GC pressure will impact latency. Warn: >70%  Critical: >85%",
             severity="Major",
             signalflow=f"""
-used = data("cassandra.jvm.memory.heap.used", {f}).mean(over="5m")
-max_h = data("cassandra.jvm.memory.heap.max", {f}).mean(over="5m")
+used = data("cassandra.jvm.memory.heap.used", filter={f}).mean(over="5m")
+max_h = data("cassandra.jvm.memory.heap.max", filter={f}).mean(over="5m")
 heap_pct = used / max_h * 100
 detect(when(heap_pct > 85), lasting="5m").publish("Critical")
 detect(when(heap_pct > 70) and when(heap_pct <= 85), lasting="5m").publish("Warning")
@@ -111,7 +111,7 @@ detect(when(heap_pct > 70) and when(heap_pct <= 85), lasting="5m").publish("Warn
             description="Cassandra hints accumulating — a node was unreachable and writes are being buffered. Node may be down.",
             severity="Warning",
             signalflow=f"""
-A = data("cassandra.storage.hints.on_disk", {f}).max(over="5m")
+A = data("cassandra.storage.hints.on_disk", filter={f}).max(over="5m")
 detect(when(A > 1000), lasting="5m").publish("Warning")
 """.strip(),
             threshold_type="fixed",
@@ -125,7 +125,7 @@ detect(when(A > 1000), lasting="5m").publish("Warning")
             description="Cassandra read errors elevated — unavailable or timeout errors on reads",
             severity="Major",
             signalflow=f"""
-A = data("cassandra.client.request.errors", {f}, filter=filter("operation", "read")).sum(over="5m")
+A = data("cassandra.client.request.errors", filter={f} and filter("operation", "read")).sum(over="5m")
 detect(when(A > 10), lasting="5m").publish("Critical")
 detect(when(A > 1) and when(A <= 10), lasting="5m").publish("Warning")
 """.strip(),

@@ -23,7 +23,7 @@ class KafkaTemplates:
             description="Kafka consumer lag exceeding threshold — consumer falling behind producers. Warn: >1000  Critical: >10000",
             severity="Major",
             signalflow=f"""
-A = data("kafka.consumer.fetch-manager-metrics.records-lag-max", {f}).max(over="5m")
+A = data("kafka.consumer.fetch-manager-metrics.records-lag-max", filter={f}).max(over="5m")
 detect(when(A > 10000), lasting="5m").publish("Critical")
 detect(when(A > 1000) and when(A <= 10000), lasting="5m").publish("Warning")
 """.strip(),
@@ -38,7 +38,7 @@ detect(when(A > 1000) and when(A <= 10000), lasting="5m").publish("Warning")
             description="Kafka consumer lag is increasing — consumer may be stuck or undersized.",
             severity="Warning",
             signalflow=f"""
-lag = data("kafka.consumer.fetch-manager-metrics.records-lag-max", {f}).mean(over="5m")
+lag = data("kafka.consumer.fetch-manager-metrics.records-lag-max", filter={f}).mean(over="5m")
 lag_delta = lag - lag.timeshift("10m")
 detect(when(lag_delta > 500), lasting="10m").publish("Warning")
 """.strip(),
@@ -53,7 +53,7 @@ detect(when(lag_delta > 500), lasting="10m").publish("Warning")
             description="Frequent consumer group rebalances — indicates unstable consumer group.",
             severity="Warning",
             signalflow=f"""
-A = data("kafka.consumer.coordinator-metrics.rebalance-rate-avg", {f}).mean(over="5m")
+A = data("kafka.consumer.coordinator-metrics.rebalance-rate-avg", filter={f}).mean(over="5m")
 detect(when(A > 0.1), lasting="5m").publish("Warning")
 """.strip(),
             threshold_type="fixed",
@@ -67,7 +67,7 @@ detect(when(A > 0.1), lasting="5m").publish("Warning")
             description="Kafka producer record error rate elevated — messages may be dropping.",
             severity="Major",
             signalflow=f"""
-A = data("kafka.producer.producer-metrics.record-error-rate", {f}).mean(over="5m")
+A = data("kafka.producer.producer-metrics.record-error-rate", filter={f}).mean(over="5m")
 detect(when(A > 0.01), lasting="5m").publish("Warning")
 detect(when(A > 0.05), lasting="5m").publish("Critical")
 """.strip(),

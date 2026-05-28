@@ -34,8 +34,7 @@ class DatabaseTemplates:
             description=f"DB query latency elevated (APM span-based). Warn: >{warn_t}ms  Anomaly: >{anomaly_t}ms",
             severity="Major",
             signalflow=f"""
-A = data("service.request.duration", {env_filter}filter("sf_service", "{service}"),
-         filter("span.kind", "client"), filter("db.system", "*")).mean(over="5m")
+A = data("service.request.duration", filter={f} and filter("span.kind", "client") and filter("db.system", "*")).mean(over="5m")
 detect(when(A > {anomaly_t}), lasting="5m").publish("Anomaly")
 detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("Warning")
 """.strip(),
@@ -51,8 +50,8 @@ detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("War
                 description="PostgreSQL active connections near max_connections limit. Warn: >80%  Critical: >95%",
                 severity="Major",
                 signalflow=f"""
-active = data("postgresql.connections", {f}, filter("state", "active")).sum(over="5m")
-max_conn = data("postgresql.connections.max", {f}).mean(over="5m")
+active = data("postgresql.connections", filter={f} and filter("state", "active")).sum(over="5m")
+max_conn = data("postgresql.connections.max", filter={f}).mean(over="5m")
 conn_pct = active / max_conn * 100
 detect(when(conn_pct > 95), lasting="2m").publish("Critical")
 detect(when(conn_pct > 80) and when(conn_pct <= 95), lasting="2m").publish("Warning")
@@ -66,7 +65,7 @@ detect(when(conn_pct > 80) and when(conn_pct <= 95), lasting="2m").publish("Warn
                 description="PostgreSQL deadlocks occurring — review transaction ordering and locking patterns.",
                 severity="Major",
                 signalflow=f"""
-A = data("postgresql.deadlocks", {f}).rate(over="5m")
+A = data("postgresql.deadlocks", filter={f}).mean(over="5m")
 detect(when(A > 0), lasting="5m").publish("Warning")
 detect(when(A > 1), lasting="5m").publish("Critical")
 """.strip(),
@@ -82,8 +81,8 @@ detect(when(A > 1), lasting="5m").publish("Critical")
                 description="MySQL threads connected near max_connections. Warn: >80%  Critical: >95%",
                 severity="Major",
                 signalflow=f"""
-connected = data("mysql.threads", {f}, filter("kind", "connected")).mean(over="5m")
-max_conn = data("mysql.connections.max", {f}).mean(over="5m")
+connected = data("mysql.threads", filter={f} and filter("kind", "connected")).mean(over="5m")
+max_conn = data("mysql.connections.max", filter={f}).mean(over="5m")
 conn_pct = connected / max_conn * 100
 detect(when(conn_pct > 95), lasting="2m").publish("Critical")
 detect(when(conn_pct > 80) and when(conn_pct <= 95), lasting="2m").publish("Warning")
@@ -100,7 +99,7 @@ detect(when(conn_pct > 80) and when(conn_pct <= 95), lasting="2m").publish("Warn
                 description="MongoDB operation latency elevated. Warn: >100ms  Critical: >500ms",
                 severity="Major",
                 signalflow=f"""
-A = data("mongodb.operation.latency.time", {f}).mean(over="5m")
+A = data("mongodb.operation.latency.time", filter={f}).mean(over="5m")
 detect(when(A > 500), lasting="5m").publish("Critical")
 detect(when(A > 100) and when(A <= 500), lasting="5m").publish("Warning")
 """.strip(),
@@ -116,10 +115,8 @@ detect(when(A > 100) and when(A <= 500), lasting="5m").publish("Warning")
             description="Unusually high DB span count per request — possible ORM N+1 query pattern.",
             severity="Warning",
             signalflow=f"""
-db_spans = data("service.request.count", {env_filter}filter("sf_service", "{service}"),
-                filter("span.kind", "client"), filter("db.system", "*")).sum(over="5m")
-total_reqs = data("service.request.count", {env_filter}filter("sf_service", "{service}"),
-                  filter("span.kind", "server")).sum(over="5m")
+db_spans = data("service.request.count", filter={f} and filter("span.kind", "client") and filter("db.system", "*")).sum(over="5m")
+total_reqs = data("service.request.count", filter={f} and filter("span.kind", "server")).sum(over="5m")
 ratio = db_spans / total_reqs
 detect(when(ratio > 10), lasting="5m").publish("Warning")
 """.strip(),

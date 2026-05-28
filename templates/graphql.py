@@ -25,8 +25,8 @@ class GraphQLTemplates:
             description="GraphQL resolver errors elevated — partial response failures or schema errors. Warn: >1%  Critical: >5%",
             severity="Major",
             signalflow=f"""
-total = data("graphql.server.request.count", {f}).sum(over="2m")
-errors = data("graphql.server.request.count", {f}, filter=filter("graphql.error", "true")).sum(over="2m")
+total = data("graphql.server.request.count", filter={f}).sum(over="2m")
+errors = data("graphql.server.request.count", filter={f} and filter("graphql.error", "true")).sum(over="2m")
 error_pct = errors / total * 100
 detect(when(error_pct > 5), lasting="2m").publish("Critical")
 detect(when(error_pct > 1) and when(error_pct <= 5), lasting="2m").publish("Warning")
@@ -52,7 +52,7 @@ detect(when(error_pct > 1) and when(error_pct <= 5), lasting="2m").publish("Warn
             description=desc,
             severity="Major",
             signalflow=f"""
-A = data("graphql.server.request.duration", {f}).percentile(pct=99, over="5m")
+A = data("graphql.server.request.duration", filter={f}).percentile(pct=99, over="5m")
 detect(when(A > {anomaly_t}), lasting="5m").publish("Anomaly")
 detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("Warning")
 """.strip(),
@@ -67,8 +67,8 @@ detect(when(A > {warn_t}) and when(A <= {anomaly_t}), lasting="5m").publish("War
             description="GraphQL mutation errors elevated — data write operations failing. Warn: >2%  Critical: >10%",
             severity="Major",
             signalflow=f"""
-total = data("graphql.server.request.count", {f}, filter=filter("graphql.operation.type", "mutation")).sum(over="5m")
-errors = data("graphql.server.request.count", {f}, filter=filter("graphql.operation.type", "mutation") and filter("graphql.error", "true")).sum(over="5m")
+total = data("graphql.server.request.count", filter={f} and filter("graphql.operation.type", "mutation")).sum(over="5m")
+errors = data("graphql.server.request.count", filter={f} and filter("graphql.operation.type", "mutation") and filter("graphql.error", "true")).sum(over="5m")
 error_pct = errors / total * 100
 detect(when(error_pct > 10), lasting="5m").publish("Critical")
 detect(when(error_pct > 2) and when(error_pct <= 10), lasting="5m").publish("Warning")
@@ -85,7 +85,7 @@ detect(when(error_pct > 2) and when(error_pct <= 10), lasting="5m").publish("War
             description="GraphQL queries with excessive depth or complexity detected — potential denial-of-service or missing limits",
             severity="Warning",
             signalflow=f"""
-A = data("graphql.server.request.depth", {f}).percentile(pct=95, over="5m")
+A = data("graphql.server.request.depth", filter={f}).percentile(pct=95, over="5m")
 detect(when(A > 15), lasting="5m").publish("Warning")
 """.strip(),
             threshold_type="fixed",
@@ -100,7 +100,7 @@ detect(when(A > 15), lasting="5m").publish("Warning")
             description="GraphQL resolvers per request unusually high — possible N+1 query pattern without DataLoader",
             severity="Warning",
             signalflow=f"""
-A = data("graphql.server.resolver.count", {f}).mean(over="5m")
+A = data("graphql.server.resolver.count", filter={f}).mean(over="5m")
 detect(when(A > 100), lasting="5m").publish("Warning")
 """.strip(),
             threshold_type="fixed",

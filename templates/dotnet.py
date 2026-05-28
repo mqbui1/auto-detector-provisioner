@@ -24,7 +24,7 @@ class DotNetTemplates:
             description=".NET GC collection rate high — possible memory pressure. Warn: >10/min  Critical: >50/min",
             severity="Major",
             signalflow=f"""
-A = data("dotnet.gc.collections", {f_rt}).rate(over="5m")
+A = data("dotnet.gc.collections", filter={f_rt}).mean(over="5m")
 detect(when(A > 50), lasting="5m").publish("Critical")
 detect(when(A > 10) and when(A <= 50), lasting="5m").publish("Warning")
 """.strip(),
@@ -49,7 +49,7 @@ detect(when(A > 10) and when(A <= 50), lasting="5m").publish("Warning")
             description=".NET managed heap size elevated. Warn: >512MB  Critical: >1GB",
             severity="Major",
             signalflow=f"""
-A = data("dotnet.gc.last_collection.heap.size", {f_rt}).mean(over="5m")
+A = data("dotnet.gc.last_collection.heap.size", filter={f_rt}).mean(over="5m")
 detect(when(A > 1073741824), lasting="5m").publish("Critical")
 detect(when(A > 536870912) and when(A <= 1073741824), lasting="5m").publish("Warning")
 """.strip(),
@@ -73,7 +73,7 @@ detect(when(A > 536870912) and when(A <= 1073741824), lasting="5m").publish("War
             description=".NET exception rate elevated — application error rate rising.",
             severity="Major",
             signalflow=f"""
-A = data("dotnet.exceptions", {f_rt}).rate(over="5m")
+A = data("dotnet.exceptions", filter={f_rt}).mean(over="5m")
 detect(when(A > 10), lasting="5m").publish("Critical")
 detect(when(A > 1) and when(A <= 10), lasting="5m").publish("Warning")
 """.strip(),
@@ -97,7 +97,7 @@ detect(when(A > 1) and when(A <= 10), lasting="5m").publish("Warning")
             description=".NET thread pool work items queued — thread pool may be saturated.",
             severity="Warning",
             signalflow=f"""
-A = data("dotnet.thread_pool.queue.length", {f_rt}).mean(over="5m")
+A = data("dotnet.thread_pool.queue.length", filter={f_rt}).mean(over="5m")
 detect(when(A > 100), lasting="5m").publish("Critical")
 detect(when(A > 20) and when(A <= 100), lasting="5m").publish("Warning")
 """.strip(),

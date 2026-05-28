@@ -24,7 +24,7 @@ class PythonTemplates:
             description="Python thread count abnormally high — possible thread leak. Warn: >50  Critical: >200",
             severity="Major",
             signalflow=f"""
-A = data("process.runtime.cpython.thread_count", {f}).mean(over="5m")
+A = data("process.runtime.cpython.thread_count", filter={f}).mean(over="5m")
 detect(when(A > 200), lasting="5m").publish("Critical")
 detect(when(A > 50) and when(A <= 200), lasting="5m").publish("Warning")
 """.strip(),
@@ -49,7 +49,7 @@ detect(when(A > 50) and when(A <= 200), lasting="5m").publish("Warning")
             description="Python GC collection rate elevated — high allocation pressure or memory leak. Warn: >10/min  Critical: >50/min",
             severity="Warning",
             signalflow=f"""
-A = data("process.runtime.cpython.gc_count", {f}).rate(over="5m")
+A = data("process.runtime.cpython.gc_count", filter={f}).mean(over="5m")
 detect(when(A > 50), lasting="5m").publish("Critical")
 detect(when(A > 10) and when(A <= 50), lasting="5m").publish("Warning")
 """.strip(),
@@ -74,7 +74,7 @@ detect(when(A > 10) and when(A <= 50), lasting="5m").publish("Warning")
             description="Python process RSS memory high — possible memory leak. Warn: >512MB  Critical: >1GB",
             severity="Warning",
             signalflow=f"""
-A = data("process.memory.rss", {f}).mean(over="5m")
+A = data("process.memory.rss", filter={f}).mean(over="5m")
 detect(when(A > 1073741824), lasting="5m").publish("Critical")
 detect(when(A > 536870912) and when(A <= 1073741824), lasting="5m").publish("Warning")
 """.strip(),

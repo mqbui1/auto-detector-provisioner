@@ -61,44 +61,75 @@ def probe_existing_metrics(
     candidate_metrics: set[str],
 ) -> set[str]:
     """
-    Query MTS catalog to find which of the candidate_metrics actually have
-    data for this service. Returns the subset that exist.
-
-    Queries twice per batch:
-    1. sf_service:"<service>" — APM-promoted metrics (service.request.count etc.)
-    2. service.name:"<service>" — OTel SDK runtime metrics that only carry the
-       OTel resource attribute (go.goroutine.count, nodejs.eventloop.*, dotnet.gc.*,
-       process.runtime.* etc.) and are never promoted to sf_service by the
-       signalfx exporter.
+    Check which candidate_metrics have had data in the last hour for this
+    service. Uses SignalFlow to verify recent data exists — stricter than
+    MTS catalog which may return metrics that existed historically but have
+    no current data.
     """
     if not candidate_metrics:
         return set()
 
-    env_filter_sf = [f'sf_environment:"{environment}"'] if environment else []
-    env_filter_otel = [f'deployment.environment:"{environment}"'] if environment else []
+    import time
+    import urllib.parse as _up
+
+    env_f = f'filter("sf_environment", "{environment}") and ' if environment else ""
+    svc_f = f'filter("sf_service", "{service}")'
+    combined = f"{env_f}{svc_f}"
+
+    now_ms = int(time.time() * 1000)
+    start_ms = now_ms - 3600 * 1000  # last 1 hour
 
     existing: set[str] = set()
+
+    # Batch into groups of 10 — each group is one SignalFlow job
     metrics_list = sorted(candidate_metrics)
+    for batch_start in range(0, len(metrics_list), 10):
+        batch = metrics_list[batch_start:batch_start + 10]
+        # Publish each metric; check which ones return values
+        lines = [f'data("{m}", filter={combined}).sum(over="1h").publish("{i}")'
+                 for i, m in enumerate(batch)]
+        program = "\n".join(lines)
 
-    for batch_start in range(0, len(metrics_list), 20):
-        batch = metrics_list[batch_start:batch_start + 20]
+        qs = _up.urlencode({"start": start_ms, "stop": now_ms,
+                            "resolution": 3600000, "immediate": "true"})
+        url = f"{api_base}/v2/signalflow/execute?{qs}"
+        req = urllib.request.Request(
+            url, data=program.encode("utf-8"),
+            headers={"X-SF-Token": token, "Content-Type": "text/plain"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data_lines: list[str] = []
+                current_event: str | None = None
+                seen_labels: set[str] = set()
+                for raw in resp:
+                    line = raw.rstrip(b"\r\n")
+                    if line.startswith(b"event:"):
+                        current_event = line[6:].strip().decode()
+                    elif line.startswith(b"data:"):
+                        data_lines.append(line[5:].strip().decode())
+                    elif line == b"":
+                        if data_lines and current_event == "data":
+                            try:
+                                msg = json.loads("\n".join(data_lines))
+                                for ts in (msg.get("data") or []):
+                                    v = ts.get("value")
+                                    label = str(ts.get("key", {}).get("label", ""))
+                                    if v is not None and float(v) > 0 and label:
+                                        seen_labels.add(label)
+                            except Exception:
+                                pass
+                        data_lines = []
+                        current_event = None
+                for i, m in enumerate(batch):
+                    if str(i) in seen_labels:
+                        existing.add(m)
+        except Exception as e:
+            logger.warning("metric_filter: probe failed for %s batch: %s", service, e)
+            # Fail open — keep all metrics in this batch
+            existing.update(batch)
 
-        # Query 1: sf_service dimension (APM-instrumented metrics)
-        existing.update(_query_mts_batch(
-            api_base, token, batch,
-            [f'sf_service:"{service}"'] + env_filter_sf,
-        ))
-
-        # Query 2: service.name dimension (OTel SDK runtime metrics)
-        # Only run if query 1 didn't find everything — avoids unnecessary API calls
-        remaining = set(batch) - existing
-        if remaining:
-            existing.update(_query_mts_batch(
-                api_base, token, list(remaining),
-                [f'service.name:"{service}"'] + env_filter_otel,
-            ))
-
-    logger.debug("metric_filter: %s/%s — %d/%d metrics exist: %s",
+    logger.debug("metric_filter: %s/%s — %d/%d metrics have recent data: %s",
                  environment, service, len(existing), len(candidate_metrics),
                  sorted(existing)[:10])
     return existing
@@ -133,7 +164,13 @@ def probe_http_status_codes_exist(
             url, headers={"X-SF-Token": token, "Accept": "application/json"}
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+            chunks = []
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            data = json.loads(b"".join(chunks).decode("utf-8"))
         for mts in (data.get("results") or []):
             dims = mts.get("dimensions") or {}
             if "http.status_code" in dims or "http.response.status_code" in dims:

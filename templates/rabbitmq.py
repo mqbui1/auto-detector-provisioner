@@ -23,7 +23,7 @@ class RabbitMQTemplates:
             description="RabbitMQ queue message backlog elevated — consumers may be slow or stopped. Warn: >1000  Critical: >10000",
             severity="Major",
             signalflow=f"""
-A = data("rabbitmq.queue.messages", {f}).max(over="5m")
+A = data("rabbitmq.queue.messages", filter={f}).max(over="5m")
 detect(when(A > 10000), lasting="5m").publish("Critical")
 detect(when(A > 1000) and when(A <= 10000), lasting="5m").publish("Warning")
 """.strip(),
@@ -38,7 +38,7 @@ detect(when(A > 1000) and when(A <= 10000), lasting="5m").publish("Warning")
             description="RabbitMQ unacked messages elevated — consumers processing slowly or stuck. Warn: >500  Critical: >5000",
             severity="Major",
             signalflow=f"""
-A = data("rabbitmq.queue.messages.unacknowledged", {f}).max(over="5m")
+A = data("rabbitmq.queue.messages.unacknowledged", filter={f}).max(over="5m")
 detect(when(A > 5000), lasting="5m").publish("Critical")
 detect(when(A > 500) and when(A <= 5000), lasting="5m").publish("Warning")
 """.strip(),
@@ -53,7 +53,7 @@ detect(when(A > 500) and when(A <= 5000), lasting="5m").publish("Warning")
             description="RabbitMQ consumer count dropped to zero — queue will accumulate with no processing",
             severity="Critical",
             signalflow=f"""
-A = data("rabbitmq.queue.consumers", {f}).min(over="2m")
+A = data("rabbitmq.queue.consumers", filter={f}).min(over="2m")
 detect(when(A < 1), lasting="2m").publish("Critical")
 """.strip(),
             threshold_type="fixed",
@@ -67,7 +67,7 @@ detect(when(A < 1), lasting="2m").publish("Critical")
             description="RabbitMQ memory alarm active — broker will block publishers until memory drops below threshold",
             severity="Critical",
             signalflow=f"""
-A = data("rabbitmq.node.mem_alarm", {f}).max(over="1m")
+A = data("rabbitmq.node.mem_alarm", filter={f}).max(over="1m")
 detect(when(A > 0), lasting="1m").publish("Critical")
 """.strip(),
             threshold_type="fixed",
@@ -81,7 +81,7 @@ detect(when(A > 0), lasting="1m").publish("Critical")
             description="RabbitMQ disk free space alarm active — broker will block all traffic",
             severity="Critical",
             signalflow=f"""
-A = data("rabbitmq.node.disk_free_alarm", {f}).max(over="1m")
+A = data("rabbitmq.node.disk_free_alarm", filter={f}).max(over="1m")
 detect(when(A > 0), lasting="1m").publish("Critical")
 """.strip(),
             threshold_type="fixed",
@@ -97,8 +97,8 @@ detect(when(A > 0), lasting="1m").publish("Critical")
                 description="RabbitMQ message publish rate deviating from baseline — possible producer issue",
                 severity="Warning",
                 signalflow=f"""
-A = data("rabbitmq.channel.messages.published", {f}).rate(over="5m")
-mean = data("rabbitmq.channel.messages.published", {f}).mean(over="1h")
+A = data("rabbitmq.channel.messages.published", filter={f}).mean(over="5m")
+mean = data("rabbitmq.channel.messages.published", filter={f}).mean(over="1h")
 detect(when(A < mean * 0.5), lasting="5m").publish("Warning")
 """.strip(),
                 threshold_type="dynamic",
@@ -112,7 +112,7 @@ detect(when(A < mean * 0.5), lasting="5m").publish("Warning")
             description="RabbitMQ channel errors elevated — possible message schema mismatch or routing issues",
             severity="Warning",
             signalflow=f"""
-A = data("rabbitmq.channel.errors", {f}).sum(over="5m")
+A = data("rabbitmq.channel.errors", filter={f}).sum(over="5m")
 detect(when(A > 10), lasting="5m").publish("Warning")
 """.strip(),
             threshold_type="fixed",
