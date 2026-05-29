@@ -15,6 +15,7 @@ import json
 import logging
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
@@ -57,21 +58,14 @@ def _service_still_active(
     """
     Check if a service has emitted spans recently via APM catalog.
     Returns True if service is still active.
+    Uses the same serviceNames query as discovery._list_apm_services.
     """
-    import urllib.parse
-    now_ms = int(time.time() * 1000)
-    lookback_ms = now_ms - int(stale_days * 24 * 3600 * 1000)
-
-    tag_filters = [{"tag": "sf_environment", "operation": "IN", "values": [environment]}]
     body = {
         "operationName": "GetServices",
-        "variables": {
-            "timeRange": {"gte": lookback_ms, "lte": now_ms},
-            "filters": tag_filters,
-        },
+        "variables": {"environmentFilter": environment},
         "query": (
-            "query GetServices($timeRange: TimeRangeInput!, $filters: [TagFilterInput!]) {"
-            " services(timeRange: $timeRange, filters: $filters) { name } }"
+            "query GetServices($environmentFilter: String) {"
+            " serviceNames(environmentName: $environmentFilter) }"
         ),
     }
     data = json.dumps(body).encode("utf-8")
@@ -83,9 +77,8 @@ def _service_still_active(
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             result = json.loads(resp.read().decode())
-            services = ((result.get("data") or {}).get("services") or [])
-            active_names = {s.get("name") for s in services}
-            return service in active_names
+            names = ((result.get("data") or {}).get("serviceNames") or [])
+            return service in names
     except Exception as e:
         logger.warning("Archive: could not check service activity for %s: %s", service, e)
         return True  # assume active on error — safer than false positive archive

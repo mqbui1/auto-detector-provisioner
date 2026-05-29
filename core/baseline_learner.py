@@ -197,10 +197,12 @@ def _learn_metric_baseline(api_base: str, token: str, metric: str, service: str,
     """Learn baseline for a specific metric via SignalFlow."""
     now_ms = int(time.time() * 1000)
     start_ms = now_ms - window_hours * 3600 * 1000
-    env_filter = f'filter("sf_environment", "{environment}") and ' if environment else ""
-    svc_filter = f'filter("sf_service", "{service}") and ' if service else ""
-
-    combined = f"{env_filter}{svc_filter}".rstrip(" and ")
+    parts = []
+    if environment:
+        parts.append(f'filter("sf_environment", "{environment}")')
+    if service:
+        parts.append(f'filter("sf_service", "{service}")')
+    combined = " and ".join(parts)
     program = f'data("{metric}", filter={combined}).mean().publish()' if combined else f'data("{metric}").mean().publish()'
     return _execute_signalflow(api_base, token, program, start_ms, now_ms)
 

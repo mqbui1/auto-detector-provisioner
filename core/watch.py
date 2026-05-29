@@ -116,6 +116,11 @@ class WatchDaemon:
             len(profiles), len(new_services), len(existing_services),
         )
 
+        # Mark all discovered services as seen (for accurate stale detection)
+        for p in profiles:
+            self.state.touch_seen(p.service, p.environment)
+        self.state.save()
+
         # ── Step 2: Provision new services ────────────────────────────────────
         for profile in new_services:
             if not self._running:
@@ -271,13 +276,15 @@ class WatchDaemon:
                 continue
             key = f"{svc_state.environment}/{svc_state.service}"
             if key not in active_keys:
-                days_provisioned = (time.time() - svc_state.provisioned_at) / 86400
-                if days_provisioned >= cfg.stale_threshold_days:
+                # Use last_seen_at if available, fall back to provisioned_at for legacy records
+                last_seen = svc_state.last_seen_at or svc_state.provisioned_at
+                days_absent = (time.time() - last_seen) / 86400
+                if days_absent >= cfg.stale_threshold_days:
                     logger.warning(
                         "Watch: %s/%s not seen in discovery for %.0f days — "
                         "consider archiving (run with --archive-stale)",
                         svc_state.environment, svc_state.service,
-                        days_provisioned,
+                        days_absent,
                     )
                     if cfg.auto_archive:
                         from .archive import archive_service
@@ -288,7 +295,7 @@ class WatchDaemon:
                             environment=svc_state.environment,
                             state=self.state,
                             dry_run=cfg.dry_run,
-                            reason=f"not seen in discovery for {days_provisioned:.0f} days",
+                            reason=f"not seen in discovery for {days_absent:.0f} days",
                         )
                         logger.info("Watch: archive result for %s/%s: %s",
                                     svc_state.environment, svc_state.service, result.action)

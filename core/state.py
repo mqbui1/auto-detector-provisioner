@@ -44,6 +44,7 @@ class ServiceState:
     baseline_snapshot: dict = field(default_factory=dict)  # actual baseline values at provision time
     detector_records: list[DetectorRecord] = field(default_factory=list)
     last_retune_at: float = 0.0
+    last_seen_at: float = 0.0     # last time this service appeared in discovery
     muted_until: float = 0.0      # epoch seconds; 0 = not muted
     archived: bool = False
 
@@ -91,6 +92,7 @@ class ProvisionerState:
                     baseline_snapshot=sdata.get("baseline_snapshot", {}),
                     detector_records=records,
                     last_retune_at=sdata.get("last_retune_at", 0),
+                    last_seen_at=sdata.get("last_seen_at", 0),
                     muted_until=sdata.get("muted_until", 0),
                     archived=sdata.get("archived", False),
                 )
@@ -109,6 +111,7 @@ class ProvisionerState:
                 "baseline_hash": s.baseline_hash,
                 "baseline_snapshot": s.baseline_snapshot,
                 "last_retune_at": s.last_retune_at,
+                "last_seen_at": s.last_seen_at,
                 "muted_until": s.muted_until,
                 "archived": s.archived,
                 "detector_records": [
@@ -191,6 +194,14 @@ class ProvisionerState:
             s.detector_records = updated_records
             s.last_retune_at = time.time()
             self.save()
+
+    def touch_seen(self, service: str, environment: str) -> None:
+        """Record that this service was seen in discovery (updates last_seen_at)."""
+        key = self._key(service, environment)
+        s = self._services.get(key)
+        if s:
+            s.last_seen_at = time.time()
+            # No save() here — called in bulk each cycle; caller saves after the loop
 
     def mute(self, service: str, environment: str, duration_minutes: int) -> None:
         key = self._key(service, environment)

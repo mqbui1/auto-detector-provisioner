@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -14,6 +15,11 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Synthetic/load-test service names — skip entirely, no detectors needed
+_SYNTHETIC_NAMES = frozenset({
+    "load-generator", "load_generator", "loadgenerator",
+    "locust", "k6", "gatling", "jmeter", "synthetic",
+})
 
 # ── Stack / framework / library fingerprints ──────────────────────────────────
 
@@ -182,7 +188,6 @@ def _gql_post(app_base: str, token: str, op: str, body: dict) -> dict:
 
 def _list_apm_services(app_base: str, token: str, environment: str | None = None) -> list[dict]:
     """List services seen in APM within the last 24h."""
-    import time
     now_ms = int(time.time() * 1000)
     start_ms = now_ms - 24 * 3600 * 1000
 
@@ -232,8 +237,7 @@ def _sample_mts_for_service(api_base: str, token: str, service: str, environment
 
 def _sample_spans_for_service(app_base: str, token: str, service: str, environment: str | None) -> list[dict]:
     """Sample recent spans for a service to detect span attribute fingerprints."""
-    import time as _time
-    now_ms = int(_time.time() * 1000)
+    now_ms = int(time.time() * 1000)
     start_ms = now_ms - 3 * 3600 * 1000
 
     # Use sf_service (Splunk APM dimension) not service.name (OTel attribute)
@@ -277,7 +281,7 @@ def _sample_spans_for_service(app_base: str, token: str, service: str, environme
                     break
             if trace_ids:
                 break
-            _time.sleep(delay)
+            time.sleep(delay)
             elapsed += delay
             delay = min(delay * 2, 2.0)
 
@@ -506,10 +510,6 @@ def discover_services(
 
     if not apm_services:
         logger.warning("Discovery: no services found via APM catalog or MTS probe")
-
-    # Synthetic/load-test services — skip entirely, no detectors needed
-    _SYNTHETIC_NAMES = {"load-generator", "load_generator", "loadgenerator",
-                        "locust", "k6", "gatling", "jmeter", "synthetic"}
 
     profiles = []
     for svc_info in apm_services:

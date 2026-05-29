@@ -81,7 +81,7 @@ def parse_args() -> argparse.Namespace:
     deploy = parser.add_argument_group("deployment")
     deploy.add_argument("--auto-deploy", action="store_true",
                         help="Deploy detectors automatically (default: dry run only)")
-    deploy.add_argument("--html-report", metavar="FILE",
+    deploy.add_argument("--html-report", type=Path, metavar="FILE",
                         help="Write interactive HTML report to FILE and open in browser "
                              "(keeps a local server running so you can deploy from the UI)")
     deploy.add_argument("--report-port", type=int, default=7777, metavar="PORT",
@@ -127,8 +127,6 @@ def parse_args() -> argparse.Namespace:
     watch.add_argument("--auto-archive", action="store_true",
                        help="Automatically archive stale services in watch mode")
 
-    parser.add_argument("--html-report", type=Path, metavar="FILE",
-                        help="Write a self-contained HTML report to FILE (e.g. report.html)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
 
     return parser.parse_args()

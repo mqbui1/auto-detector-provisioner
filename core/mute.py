@@ -152,8 +152,17 @@ def unmute_service(
     api_base = f"https://api.{realm}.signalfx.com"
 
     try:
-        resp = _api_get(api_base, token, "/v2/muterule")
-        rules = resp.get("results") or []
+        # Paginate through all mute rules (API default limit is 50)
+        rules: list[dict] = []
+        offset = 0
+        limit = 100
+        while True:
+            resp = _api_get(api_base, token, f"/v2/muterule?limit={limit}&offset={offset}")
+            page = resp.get("results") or []
+            rules.extend(page)
+            if len(page) < limit:
+                break
+            offset += limit
         deleted = 0
 
         for rule in rules:
