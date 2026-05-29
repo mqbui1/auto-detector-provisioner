@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
@@ -32,7 +34,6 @@ class DeployResult:
 
 
 def _api_get(api_base: str, token: str, path: str, params: dict | None = None) -> dict:
-    import urllib.parse
     qs = urllib.parse.urlencode({k: v for k, v in (params or {}).items() if v is not None})
     url = f"{api_base}{path}" + (f"?{qs}" if qs else "")
     req = urllib.request.Request(url, headers={"X-SF-Token": token, "Accept": "application/json"})
@@ -92,7 +93,6 @@ def _normalize_signalflow(sf: str) -> str:
       - lasting="..." on detect() — not supported in this API version
     Replace detect(when(...), lasting="5m") → detect(when(...))
     """
-    import re
     # Remove , lasting="..." or , lasting='...' from detect() calls
     sf = re.sub(r",\s*lasting=['\"][^'\"]+['\"]", "", sf)
     return sf
@@ -144,7 +144,6 @@ def _build_detector_payload(
             f"service:{service}",
             f"environment:{environment}",
             "auto-provisioned",
-            f"stack:{template.tags[0]}" if template.tags else "stack:unknown",
         ],
         "visualizationOptions": {},
         "teams": [],

@@ -197,6 +197,7 @@ class WatchDaemon:
             "latency_mean_ms": baseline.latency_mean_ms if baseline else None,
             "latency_stddev_ms": baseline.latency_stddev_ms if baseline else None,
             "error_rate_pct": baseline.error_rate_pct if baseline else None,
+            "error_rate_stddev_pct": baseline.error_rate_stddev_pct if baseline else None,
             "sample_count": baseline.sample_count if baseline else 0,
         }
         self.state.record_provision(
@@ -252,6 +253,7 @@ class WatchDaemon:
             new_baseline=baseline,
             state=self.state,
             dry_run=cfg.dry_run,
+            retune_interval_days=cfg.retune_interval_days,
         )
 
         updated = sum(1 for r in results if r.action == "updated")

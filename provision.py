@@ -34,6 +34,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import datetime
 import logging
 import os
 import sys
@@ -295,17 +296,21 @@ def main() -> int:
                 print(f"  Skipping retune — {profile.service} is currently muted", file=sys.stderr)
                 continue
 
-            baseline = learn_baseline(
-                realm=args.realm, token=args.token,
-                service=profile.service, environment=profile.environment,
-                window_hours=args.baseline_window_hours,
-                output_dir=args.baseline_dir,
-            )
+            baseline_path = args.baseline_dir / f"{profile.environment}__{profile.service}.json"
+            baseline = load_baseline(baseline_path)
+            if not baseline:
+                baseline = learn_baseline(
+                    realm=args.realm, token=args.token,
+                    service=profile.service, environment=profile.environment,
+                    window_hours=args.baseline_window_hours,
+                    output_dir=args.baseline_dir,
+                )
 
             results = retune_service(
                 realm=args.realm, token=args.token,
                 service=profile.service, environment=profile.environment,
                 new_baseline=baseline, state=state, dry_run=dry_run,
+                retune_interval_days=args.retune_interval_days,
             )
             print(format_retune_summary(results, dry_run))
             total_actioned += sum(1 for r in results if r.action == "updated")
@@ -392,6 +397,7 @@ def main() -> int:
                 "latency_mean_ms": baseline.latency_mean_ms if baseline else None,
                 "latency_stddev_ms": baseline.latency_stddev_ms if baseline else None,
                 "error_rate_pct": baseline.error_rate_pct if baseline else None,
+                "error_rate_stddev_pct": baseline.error_rate_stddev_pct if baseline else None,
                 "sample_count": baseline.sample_count if baseline else 0,
             }
             state.record_provision(
@@ -407,7 +413,6 @@ def main() -> int:
 
     # ── HTML report ───────────────────────────────────────────────────────────
     if args.html_report and html_report_data:
-        import datetime
         report_path = Path(args.html_report)
         generated_at = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
@@ -438,6 +443,7 @@ def main() -> int:
             detector_context=detector_context,
             report_path=report_path,
             port=args.report_port,
+            notify=args.notify or None,
         )
         server.start()
         server.open_browser()
@@ -458,12 +464,6 @@ def main() -> int:
     if dry_run and not args.retune:
         print("\nRun with --auto-deploy to create these detectors.", file=sys.stderr)
     print(f"{'='*60}\n", file=sys.stderr)
-
-    if args.html_report and html_data:
-        html = format_html_report(html_data, realm=args.realm, environment=args.environment)
-        args.html_report.parent.mkdir(parents=True, exist_ok=True)
-        args.html_report.write_text(html, encoding="utf-8")
-        print(f"HTML report written to: {args.html_report}", file=sys.stderr)
 
     return 0 if total_failed == 0 else 1
 

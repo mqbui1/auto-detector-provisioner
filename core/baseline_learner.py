@@ -52,6 +52,7 @@ class ServiceBaseline:
     latency_p99_ms: float | None = None
     latency_stddev_ms: float | None = None
     error_rate_pct: float | None = None
+    error_rate_stddev_pct: float | None = None
     request_rate_per_min: float | None = None
     sample_count: int = 0
 
@@ -238,6 +239,7 @@ def learn_baseline(
             baseline.sample_count = int(lat["count"])
         if err["count"] > 0:
             baseline.error_rate_pct = err["mean"]
+            baseline.error_rate_stddev_pct = err["stddev"]
         logger.info("Baseline: APM latency=%.1fms p99=%.1fms error_rate=%.2f%%",
                     baseline.latency_mean_ms or 0,
                     baseline.latency_p99_ms or 0,
@@ -285,6 +287,7 @@ def _save_baseline(baseline: ServiceBaseline, path: Path) -> None:
         "latency_p99_ms": baseline.latency_p99_ms,
         "latency_stddev_ms": baseline.latency_stddev_ms,
         "error_rate_pct": baseline.error_rate_pct,
+        "error_rate_stddev_pct": baseline.error_rate_stddev_pct,
         "request_rate_per_min": baseline.request_rate_per_min,
         "metrics": {
             k: {
@@ -330,6 +333,7 @@ def load_baseline(path: Path) -> ServiceBaseline | None:
         latency_p99_ms=data.get("latency_p99_ms"),
         latency_stddev_ms=data.get("latency_stddev_ms"),
         error_rate_pct=data.get("error_rate_pct"),
+        error_rate_stddev_pct=data.get("error_rate_stddev_pct"),
         request_rate_per_min=data.get("request_rate_per_min"),
     )
     for metric, stats in (data.get("metrics") or {}).items():

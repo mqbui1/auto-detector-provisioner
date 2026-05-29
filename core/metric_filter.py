@@ -25,33 +25,6 @@ def extract_metrics_from_signalflow(signalflow: str) -> set[str]:
     return set(_METRIC_RE.findall(signalflow))
 
 
-def _query_mts_batch(
-    api_base: str,
-    token: str,
-    batch: list[str],
-    filters: list[str],
-) -> set[str]:
-    """Run one MTS catalog batch query, return metric names found."""
-    metric_filter = " OR ".join(f'sf_metric:"{m}"' for m in batch)
-    query = f'({metric_filter}) AND {" AND ".join(filters)}'
-    found: set[str] = set()
-    try:
-        qs = urllib.parse.urlencode({"query": query, "limit": len(batch) * 2})
-        url = f"{api_base}/v2/metrictimeseries?{qs}"
-        req = urllib.request.Request(
-            url, headers={"X-SF-Token": token, "Accept": "application/json"}
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        for mts in (data.get("results") or []):
-            metric = mts.get("metric") or mts.get("name") or ""
-            if metric:
-                found.add(metric)
-    except Exception as e:
-        logger.warning("metric_filter: probe failed (filters=%s): %s", filters, e)
-        found.update(batch)  # fail open
-    return found
-
 
 def probe_existing_metrics(
     api_base: str,

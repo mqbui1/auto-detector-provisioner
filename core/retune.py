@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -79,15 +80,26 @@ def _api_patch(api_base: str, token: str, detector_id: str, body: dict) -> dict:
 
 
 def _replace_threshold(text: str, old_val: float, new_val: float) -> str:
-    """Replace a numeric threshold in SignalFlow using word-boundary regex to avoid partial matches."""
-    import re
-    old_s = str(old_val)
+    """Replace a numeric threshold in SignalFlow using word-boundary regex to avoid partial matches.
+
+    Handles both integer-formatted floats (200) and decimal-formatted floats (200.0)
+    that may appear in SignalFlow text depending on how thresholds were originally written.
+    """
     new_s = str(new_val)
-    if old_s == new_s:
-        return text
-    # Match the number only when preceded/followed by non-digit, non-dot (i.e. as a standalone literal)
-    pattern = r'(?<![0-9\.])' + re.escape(old_s) + r'(?![0-9\.])'
-    return re.sub(pattern, new_s, text)
+    # Build candidate string representations of old_val to match:
+    # 200.0 → try "200.0" and "200"; 200.5 → try "200.5" only
+    candidates = [str(old_val)]
+    if old_val == int(old_val):
+        candidates.append(str(int(old_val)))
+
+    for old_s in candidates:
+        if old_s == new_s:
+            continue
+        pattern = r'(?<![0-9\.])' + re.escape(old_s) + r'(?![0-9\.])'
+        new_text = re.sub(pattern, new_s, text)
+        if new_text != text:
+            return new_text
+    return text
 
 
 def _rebuild_signalflow(old_signalflow: str, old_baseline: dict, new_baseline: ServiceBaseline) -> str | None:
@@ -100,7 +112,8 @@ def _rebuild_signalflow(old_signalflow: str, old_baseline: dict, new_baseline: S
 
     old_lat_mean = old_baseline.get("latency_mean_ms") or 0
     old_lat_std = old_baseline.get("latency_stddev_ms") or 0
-    old_err_rate = old_baseline.get("error_rate_pct")
+    old_err_mean = old_baseline.get("error_rate_pct")
+    old_err_std = old_baseline.get("error_rate_stddev_pct") or 0
 
     changed = False
 
@@ -121,20 +134,19 @@ def _rebuild_signalflow(old_signalflow: str, old_baseline: dict, new_baseline: S
                     text = new_text
                     changed = True
 
-    # ── Error rate threshold ──────────────────────────────────────────────────
-    if old_err_rate is not None and new_baseline.error_rate_pct is not None:
-        err_drift = _drift_pct(old_err_rate, new_baseline.error_rate_pct)
-        if err_drift >= RETUNE_DRIFT_THRESHOLD:
-            # Dynamic error rate detectors use mean + 2*stddev and mean + 3*stddev
-            # from the baseline error stats — approximate as scalar thresholds here
-            # since we only store the mean in the snapshot (stddev not stored yet).
-            # For now update the raw percentage threshold if it appears.
-            old_t = round(old_err_rate, 2)
-            new_t = round(new_baseline.error_rate_pct, 2)
-            new_text = _replace_threshold(text, old_t, new_t)
-            if new_text != text:
-                text = new_text
-                changed = True
+    # ── Error rate thresholds ─────────────────────────────────────────────────
+    if old_err_mean is not None and new_baseline.error_rate_pct is not None:
+        err_drift = _drift_pct(old_err_mean, new_baseline.error_rate_pct)
+        new_err_std = new_baseline.error_rate_stddev_pct or 0
+        if err_drift >= RETUNE_DRIFT_THRESHOLD or _drift_pct(old_err_std, new_err_std) >= RETUNE_DRIFT_THRESHOLD:
+            # Dynamic error rate detectors use mean + N*stddev thresholds
+            for n_sigma in [2.0, 3.0]:
+                old_t = round(old_err_mean + n_sigma * old_err_std, 2)
+                new_t = round((new_baseline.error_rate_pct or 0) + n_sigma * new_err_std, 2)
+                new_text = _replace_threshold(text, old_t, new_t)
+                if new_text != text:
+                    text = new_text
+                    changed = True
 
     return text if changed else None
 
@@ -147,6 +159,7 @@ def retune_service(
     new_baseline: ServiceBaseline,
     state: ProvisionerState,
     dry_run: bool = True,
+    retune_interval_days: float = 7.0,
 ) -> list[RetuneResult]:
     """
     Compare current baseline to the one recorded at provision time.
@@ -161,7 +174,7 @@ def retune_service(
         return results
 
     new_hash = baseline_hash(new_baseline)
-    if not svc_state.needs_retune(new_hash):
+    if not svc_state.needs_retune(new_hash, retune_interval_days):
         logger.info("Retune: %s/%s baseline unchanged — no retune needed", environment, service)
         return results
 
@@ -190,7 +203,7 @@ def retune_service(
         try:
             # Fetch current detector from API
             current = _api_get(api_base, token, record.detector_id)
-            current_signalflow = current.get("signalFlowText", "")
+            current_signalflow = current.get("programText", "")
 
             new_signalflow = _rebuild_signalflow(
                 current_signalflow,
@@ -216,14 +229,14 @@ def retune_service(
                     service=service, environment=environment,
                     detector_id=record.detector_id,
                     detector_name=record.detector_name,
-                    action="updated",
-                    reason="dry-run — would update SignalFlow thresholds",
+                    action="dry-run",
+                    reason="would update SignalFlow thresholds",
                 ))
                 continue
 
             # Patch the detector
             patch_body = dict(current)
-            patch_body["signalFlowText"] = new_signalflow
+            patch_body["programText"] = new_signalflow
             _api_patch(api_base, token, record.detector_id, patch_body)
 
             new_record = DetectorRecord(
@@ -260,6 +273,7 @@ def retune_service(
             "latency_mean_ms": new_baseline.latency_mean_ms,
             "latency_stddev_ms": new_baseline.latency_stddev_ms,
             "error_rate_pct": new_baseline.error_rate_pct,
+            "error_rate_stddev_pct": new_baseline.error_rate_stddev_pct,
             "sample_count": new_baseline.sample_count,
         }
         state.record_retune(service, environment, new_hash, updated_records, baseline_snapshot=new_snapshot)
@@ -269,15 +283,19 @@ def retune_service(
 
 def format_retune_summary(results: list[RetuneResult], dry_run: bool) -> str:
     mode = "DRY RUN" if dry_run else "RETUNE"
+    dry_run_items = [r for r in results if r.action == "dry-run"]
     updated = [r for r in results if r.action == "updated"]
     skipped = [r for r in results if r.action == "skipped"]
     failed = [r for r in results if r.action == "failed"]
 
-    lines = [f"\n{mode} SUMMARY: {len(updated)} updated, {len(skipped)} skipped, {len(failed)} failed"]
+    actioned = dry_run_items if dry_run else updated
+    lines = [f"\n{mode} SUMMARY: {len(actioned)} {'would be updated' if dry_run else 'updated'}, "
+             f"{len(skipped)} skipped, {len(failed)} failed"]
 
-    if updated:
-        lines.append(f"\nUPDATED ({len(updated)}):")
-        for r in updated:
+    if actioned:
+        label = "WOULD UPDATE" if dry_run else "UPDATED"
+        lines.append(f"\n{label} ({len(actioned)}):")
+        for r in actioned:
             lines.append(f"  ✓ {r.detector_name}: {r.reason}")
 
     if failed:

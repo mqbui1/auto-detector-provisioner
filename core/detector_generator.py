@@ -5,7 +5,11 @@ dry-run review or deployment.
 """
 from __future__ import annotations
 
+import datetime
+import html as _html
 import logging
+import re as _re
+import textwrap
 from typing import Any
 
 from templates import TEMPLATE_REGISTRY
@@ -121,9 +125,6 @@ def format_html_report(
     environment: str | None,
 ) -> str:
     """Render a self-contained HTML report for all services and their detectors."""
-    import html as _html
-    import datetime
-
     def h(s: str) -> str:
         return _html.escape(str(s))
 
@@ -319,7 +320,6 @@ def format_html_report(
             )
 
             # Strip [service] prefix from name for display (service is shown in card header)
-            import re as _re
             display_name = _re.sub(r'^\[.*?\]\s*', '', det.name)
             # Simplify description: strip "Service X " prefix from description
             display_desc = _re.sub(rf'^Service\s+{_re.escape(profile.service)}\s+', '', det.description)
@@ -417,7 +417,6 @@ def format_dry_run_report(
             lines.append(f"       Signal:  {d.description}")
             if d.rationale:
                 # Wrap rationale at 80 chars with consistent indent
-                import textwrap
                 wrapped = textwrap.fill(d.rationale, width=80,
                                         initial_indent="       Rationale: ",
                                         subsequent_indent="                  ")

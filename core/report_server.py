@@ -40,6 +40,7 @@ class _Handler(BaseHTTPRequestHandler):
     # Injected by ReportServer before starting
     realm: str = ""
     token: str = ""
+    notify: list[str] = []
     # {det_id: DetectorTemplate}
     detector_map: dict[str, DetectorTemplate] = {}
     # {det_id: (service, environment)}
@@ -120,6 +121,7 @@ class _Handler(BaseHTTPRequestHandler):
                 environment=environment,
                 detectors=dets,
                 dry_run=False,
+                notify=self.notify or None,
             )
             for r in results:
                 all_results.append({
@@ -156,6 +158,7 @@ class ReportServer:
         detector_context: dict[str, tuple[str, str]],
         report_path: Path,
         port: int = 7777,
+        notify: list[str] | None = None,
     ) -> None:
         self.port = port
         self.report_path = report_path
@@ -163,6 +166,7 @@ class ReportServer:
         # Patch class-level attributes on the handler
         _Handler.realm = realm
         _Handler.token = token
+        _Handler.notify = notify or []
         _Handler.detector_map = detector_map
         _Handler.detector_context = detector_context
         _Handler.report_path = report_path

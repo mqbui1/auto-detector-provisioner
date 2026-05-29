@@ -24,7 +24,6 @@ from .celery import CeleryTemplates
 from .nginx import NginxTemplates
 from .istio import IstioTemplates
 from .host import HostTemplates
-from .http_patterns import HTTPPatternsTemplates, BatchJobTemplates, ObservabilityQualityTemplates
 
 # Registry: detected technology → template class
 TEMPLATE_REGISTRY: dict[str, type] = {
@@ -68,8 +67,4 @@ TEMPLATE_REGISTRY: dict[str, type] = {
     "aws_lambda":    AWSTemplates,
     "aws_ecs":       AWSTemplates,
     "aws_sqs":       AWSTemplates,
-    # Cross-cutting HTTP patterns (applied to all HTTP services)
-    "http_patterns": HTTPPatternsTemplates,
-    "batch_job":     BatchJobTemplates,
-    "observability": ObservabilityQualityTemplates,
 }

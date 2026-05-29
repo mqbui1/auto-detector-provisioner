@@ -5,7 +5,14 @@ drift detection, and retune decisions.
 """
 from __future__ import annotations
 
-import fcntl
+try:
+    import fcntl as _fcntl
+    def _lock(f): _fcntl.flock(f, _fcntl.LOCK_EX)
+    def _unlock(f): _fcntl.flock(f, _fcntl.LOCK_UN)
+except ImportError:
+    # Windows — no fcntl; writes are still atomic via tmp→rename
+    def _lock(f): pass
+    def _unlock(f): pass
 import json
 import logging
 import time
@@ -123,11 +130,11 @@ class ProvisionerState:
         lock.parent.mkdir(parents=True, exist_ok=True)
         with open(lock, "w") as lf:
             try:
-                fcntl.flock(lf, fcntl.LOCK_EX)
+                _lock(lf)
                 tmp.write_text(json.dumps(raw, indent=2))
                 tmp.replace(self.path)
             finally:
-                fcntl.flock(lf, fcntl.LOCK_UN)
+                _unlock(lf)
         logger.debug("State: saved %d service records to %s", len(self._services), self.path)
 
     # ── Accessors ─────────────────────────────────────────────────────────────
