@@ -360,11 +360,18 @@ def main() -> int:
             for r in results if r.success
         ]
         if not dry_run or args.force_reprovision:
+            b_snapshot = {
+                "latency_mean_ms": baseline.latency_mean_ms if baseline else None,
+                "latency_stddev_ms": baseline.latency_stddev_ms if baseline else None,
+                "error_rate_pct": baseline.error_rate_pct if baseline else None,
+                "sample_count": baseline.sample_count if baseline else 0,
+            }
             state.record_provision(
                 service=profile.service,
                 environment=profile.environment,
                 baseline_hash=b_hash,
                 detector_records=records,
+                baseline_snapshot=b_snapshot,
             )
 
         total_actioned += sum(1 for r in results if r.success)

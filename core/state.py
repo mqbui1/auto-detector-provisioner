@@ -33,6 +33,7 @@ class ServiceState:
     environment: str
     provisioned_at: float
     baseline_hash: str            # hash of baseline values — change triggers retune
+    baseline_snapshot: dict = field(default_factory=dict)  # actual baseline values at provision time
     detector_records: list[DetectorRecord] = field(default_factory=list)
     last_retune_at: float = 0.0
     muted_until: float = 0.0      # epoch seconds; 0 = not muted
@@ -79,6 +80,7 @@ class ProvisionerState:
                     environment=sdata["environment"],
                     provisioned_at=sdata.get("provisioned_at", 0),
                     baseline_hash=sdata.get("baseline_hash", ""),
+                    baseline_snapshot=sdata.get("baseline_snapshot", {}),
                     detector_records=records,
                     last_retune_at=sdata.get("last_retune_at", 0),
                     muted_until=sdata.get("muted_until", 0),
@@ -97,6 +99,7 @@ class ProvisionerState:
                 "environment": s.environment,
                 "provisioned_at": s.provisioned_at,
                 "baseline_hash": s.baseline_hash,
+                "baseline_snapshot": s.baseline_snapshot,
                 "last_retune_at": s.last_retune_at,
                 "muted_until": s.muted_until,
                 "archived": s.archived,
@@ -138,6 +141,7 @@ class ProvisionerState:
         environment: str,
         baseline_hash: str,
         detector_records: list[DetectorRecord],
+        baseline_snapshot: dict | None = None,
     ) -> None:
         key = self._key(service, environment)
         now = time.time()
@@ -146,6 +150,7 @@ class ProvisionerState:
             environment=environment,
             provisioned_at=now,
             baseline_hash=baseline_hash,
+            baseline_snapshot=baseline_snapshot or {},
             detector_records=detector_records,
             last_retune_at=now,
         )
@@ -157,11 +162,13 @@ class ProvisionerState:
         environment: str,
         new_baseline_hash: str,
         updated_records: list[DetectorRecord],
+        baseline_snapshot: dict | None = None,
     ) -> None:
         key = self._key(service, environment)
         s = self._services.get(key)
         if s:
             s.baseline_hash = new_baseline_hash
+            s.baseline_snapshot = baseline_snapshot or s.baseline_snapshot
             s.detector_records = updated_records
             s.last_retune_at = time.time()
             self.save()

@@ -139,11 +139,7 @@ def retune_service(
 
     logger.info("Retune: %s/%s baseline drifted — checking detectors", environment, service)
 
-    # Reconstruct old baseline from hash context (stored at provision time)
-    old_baseline_snapshot = {
-        "latency_mean_ms": _parse_hash_component(svc_state.baseline_hash, 0),
-        "latency_stddev_ms": _parse_hash_component(svc_state.baseline_hash, 1),
-    }
+    old_baseline_snapshot = svc_state.baseline_snapshot
 
     updated_records: list[DetectorRecord] = []
 
@@ -232,14 +228,15 @@ def retune_service(
             logger.error("Retune: failed to update %s: %s", record.detector_name, e)
 
     if not dry_run:
-        state.record_retune(service, environment, new_hash, updated_records)
+        new_snapshot = {
+            "latency_mean_ms": new_baseline.latency_mean_ms,
+            "latency_stddev_ms": new_baseline.latency_stddev_ms,
+            "error_rate_pct": new_baseline.error_rate_pct,
+            "sample_count": new_baseline.sample_count,
+        }
+        state.record_retune(service, environment, new_hash, updated_records, baseline_snapshot=new_snapshot)
 
     return results
-
-
-def _parse_hash_component(h: str, index: int) -> float:
-    """Placeholder — in production, store baseline values alongside the hash."""
-    return 0.0
 
 
 def format_retune_summary(results: list[RetuneResult], dry_run: bool) -> str:
