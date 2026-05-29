@@ -471,29 +471,41 @@ def discover_services(
     logger.info("Discovery: listing APM services (env=%s)", environment)
     apm_services = _list_apm_services(app_base, token, environment)
 
+    # Always supplement APM discovery with MTS catalog so we catch services
+    # that emit OTel metrics (service.name dimension) but no APM spans —
+    # e.g. batch jobs, infrastructure exporters, sidecars, metric-only services.
+    seen: set[str] = set(s.get("name", "") for s in apm_services)
+    logger.info("Discovery: supplementing with MTS catalog (env=%s)", environment)
+
+    # APM-promoted metrics use sf_service; OTel SDK metrics use service.name
+    mts_queries: list[tuple[str, str]] = [
+        ("service.request.count", "sf_service"),
+        ("spans.count", "sf_service"),
+        ("process.runtime.go.goroutines", "service.name"),
+        ("process.runtime.jvm.memory.used", "service.name"),
+        ("process.runtime.nodejs.memory.heap.used", "service.name"),
+        ("process.runtime.dotnet.gc.heap.size", "service.name"),
+    ]
+    for metric, svc_dim in mts_queries:
+        try:
+            parts = [f'sf_metric:"{metric}"']
+            if environment:
+                env_dim = "sf_environment" if svc_dim == "sf_service" else "deployment.environment"
+                parts.append(f'{env_dim}:"{environment}"')
+            data = _api_get(api_base, token, "/v2/metrictimeseries", {"query": " AND ".join(parts), "limit": 1000})
+            for mts in (data.get("results") or []):
+                dims = mts.get("dimensions") or {}
+                svc = dims.get(svc_dim) or dims.get("sf_service") or dims.get("service.name")
+                env = (dims.get("sf_environment") or dims.get("deployment.environment")
+                       or environment or "")
+                if svc and svc not in seen:
+                    apm_services.append({"name": svc, "environment": env})
+                    seen.add(svc)
+        except RuntimeError as e:
+            logger.warning("Discovery: MTS probe failed for metric %s: %s", metric, e)
+
     if not apm_services:
-        # Fallback: discover via MTS catalog using multiple APM metrics
-        # service.request.count covers services with HTTP/gRPC instrumentation
-        # spans.count covers services that emit spans but not service.request.count
-        logger.info("Discovery: APM service list empty, falling back to MTS catalog")
-        seen: set[str] = set()
-        for apm_metric in ["service.request.count", "spans.count", "traces.count"]:
-            try:
-                parts = [f'sf_metric:"{apm_metric}"']
-                if environment:
-                    parts.append(f'sf_environment:"{environment}"')
-                q = " AND ".join(parts)
-                data = _api_get(api_base, token, "/v2/metrictimeseries", {"query": q, "limit": 1000})
-                for mts in (data.get("results") or []):
-                    dims = mts.get("dimensions") or {}
-                    svc = dims.get("sf_service") or dims.get("service.name")
-                    env = dims.get("sf_environment") or dims.get("deployment.environment") or environment or ""
-                    if svc and svc not in seen:
-                        apm_services.append({"name": svc, "environment": env})
-                        seen.add(svc)
-            except RuntimeError as e:
-                logger.warning("MTS fallback failed for metric %s: %s", apm_metric, e)
-        logger.info("Discovery: MTS fallback found %d services", len(apm_services))
+        logger.warning("Discovery: no services found via APM catalog or MTS probe")
 
     # Synthetic/load-test services — skip entirely, no detectors needed
     _SYNTHETIC_NAMES = {"load-generator", "load_generator", "loadgenerator",

@@ -193,11 +193,18 @@ class WatchDaemon:
             )
             for r in results if r.success
         ]
+        b_snapshot = {
+            "latency_mean_ms": baseline.latency_mean_ms if baseline else None,
+            "latency_stddev_ms": baseline.latency_stddev_ms if baseline else None,
+            "error_rate_pct": baseline.error_rate_pct if baseline else None,
+            "sample_count": baseline.sample_count if baseline else 0,
+        }
         self.state.record_provision(
             service=profile.service,
             environment=profile.environment,
             baseline_hash=b_hash,
             detector_records=records,
+            baseline_snapshot=b_snapshot,
         )
 
         succeeded = sum(1 for r in results if r.success)
@@ -214,16 +221,18 @@ class WatchDaemon:
         if not svc_state:
             return
 
-        # Learn new baseline
+        # Use cached baseline if fresh; only call API if cache is stale/missing
         baseline_path = cfg.baseline_dir / f"{profile.environment}__{profile.service}.json"
-        baseline = learn_baseline(
-            realm=cfg.realm,
-            token=cfg.token,
-            service=profile.service,
-            environment=profile.environment,
-            window_hours=cfg.baseline_window_hours,
-            output_dir=cfg.baseline_dir,
-        )
+        baseline = load_baseline(baseline_path)
+        if not baseline:
+            baseline = learn_baseline(
+                realm=cfg.realm,
+                token=cfg.token,
+                service=profile.service,
+                environment=profile.environment,
+                window_hours=cfg.baseline_window_hours,
+                output_dir=cfg.baseline_dir,
+            )
 
         if not baseline.is_reliable():
             logger.debug("Watch: %s/%s baseline unreliable — skipping retune",

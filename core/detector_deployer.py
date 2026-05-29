@@ -98,8 +98,19 @@ def _normalize_signalflow(sf: str) -> str:
     return sf
 
 
-def _build_detector_payload(template: DetectorTemplate, service: str, environment: str) -> dict:
+def _build_notifications(integration_ids: list[str]) -> list[dict]:
+    """Build notification objects from a list of integration IDs."""
+    return [{"type": "Integration", "integrationId": iid} for iid in integration_ids]
+
+
+def _build_detector_payload(
+    template: DetectorTemplate,
+    service: str,
+    environment: str,
+    notify: list[str] | None = None,
+) -> dict:
     """Build the Splunk Observability detector API payload from a template."""
+    notifications = _build_notifications(notify or [])
     rules = []
 
     # Parse publish labels from SignalFlow to build notification rules
@@ -113,7 +124,7 @@ def _build_detector_payload(template: DetectorTemplate, service: str, environmen
                 "detectLabel": label,
                 "severity": severity,
                 "disabled": False,
-                "notifications": [],
+                "notifications": notifications,
             })
 
     if not rules:
@@ -121,9 +132,10 @@ def _build_detector_payload(template: DetectorTemplate, service: str, environmen
             "detectLabel": "Alert",
             "severity": template.severity,
             "disabled": False,
-            "notifications": [],
+            "notifications": notifications,
         })
 
+    normalized = _normalize_signalflow(template.signalflow)
     return {
         "name": template.name,
         "description": template.description,
@@ -136,7 +148,7 @@ def _build_detector_payload(template: DetectorTemplate, service: str, environmen
         ],
         "visualizationOptions": {},
         "teams": [],
-        "programText": _normalize_signalflow(template.signalflow),
+        "programText": normalized,
     }
 
 
@@ -147,6 +159,7 @@ def reconcile_detectors(
     environment: str,
     detectors: list[DetectorTemplate],
     dry_run: bool = True,
+    notify: list[str] | None = None,
 ) -> list[DeployResult]:
     """
     Reconcile detectors: fetch existing auto-provisioned detectors for the
@@ -196,7 +209,7 @@ def reconcile_detectors(
                 continue
 
             try:
-                payload = _build_detector_payload(template, service, environment)
+                payload = _build_detector_payload(template, service, environment, notify=notify)
                 updated = _api_put(api_base, token, f"/v2/detector/{existing_det['id']}", {
                     **existing_det,
                     "programText": fresh_prog,
@@ -229,7 +242,7 @@ def reconcile_detectors(
                 ))
                 continue
             try:
-                payload = _build_detector_payload(template, service, environment)
+                payload = _build_detector_payload(template, service, environment, notify=notify)
                 response = _api_post(api_base, token, "/v2/detector", payload)
                 detector_id = response.get("id", "unknown")
                 logger.info("Created detector: %s (id=%s)", template.name, detector_id)
@@ -256,13 +269,29 @@ def deploy_detectors(
     environment: str,
     detectors: list[DetectorTemplate],
     dry_run: bool = True,
+    notify: list[str] | None = None,
 ) -> list[DeployResult]:
     """
     Deploy detectors to Splunk Observability.
-    If dry_run=True, prints what would be deployed without making API calls.
+    Checks for existing detectors by name to avoid duplicates — if a detector
+    with the same name already exists it is updated (PUT) rather than created.
+    If dry_run=True, prints what would happen without making API calls.
     """
     api_base = f"https://api.{realm}.signalfx.com"
     results = []
+
+    # Fetch existing auto-provisioned detectors for this service once upfront
+    existing_by_name: dict[str, dict] = {}
+    if not dry_run:
+        try:
+            resp = _api_get(api_base, token, "/v2/detector", {
+                "limit": 200, "tags": "auto-provisioned",
+            })
+            for d in resp.get("results", []):
+                if f"service:{service}" in (d.get("tags") or []):
+                    existing_by_name[d["name"]] = d
+        except RuntimeError as e:
+            logger.warning("deploy: could not check existing detectors for %s: %s", service, e)
 
     for template in detectors:
         if dry_run:
@@ -275,17 +304,31 @@ def deploy_detectors(
             continue
 
         try:
-            payload = _build_detector_payload(template, service, environment)
-            response = _api_post(api_base, token, "/v2/detector", payload)
-            detector_id = response.get("id", "unknown")
-            logger.info("Created detector: %s (id=%s)", template.name, detector_id)
+            payload = _build_detector_payload(template, service, environment, notify=notify)
+            existing = existing_by_name.get(template.name)
+            if existing:
+                # Update in-place to avoid duplicate
+                updated = _api_put(api_base, token, f"/v2/detector/{existing['id']}", {
+                    **existing,
+                    "programText": payload["programText"],
+                    "name": payload["name"],
+                    "description": payload["description"],
+                    "rules": payload["rules"],
+                    "tags": payload["tags"],
+                })
+                detector_id = updated.get("id", existing["id"])
+                logger.info("Updated existing detector: %s (id=%s)", template.name, detector_id)
+            else:
+                response = _api_post(api_base, token, "/v2/detector", payload)
+                detector_id = response.get("id", "unknown")
+                logger.info("Created detector: %s (id=%s)", template.name, detector_id)
             results.append(DeployResult(
                 detector_name=template.name,
                 success=True,
                 detector_id=detector_id,
             ))
         except RuntimeError as e:
-            logger.error("Failed to create detector %s: %s", template.name, e)
+            logger.error("Failed to deploy detector %s: %s", template.name, e)
             results.append(DeployResult(
                 detector_name=template.name,
                 success=False,

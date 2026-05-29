@@ -5,6 +5,7 @@ drift detection, and retune decisions.
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import time
@@ -115,7 +116,18 @@ class ProvisionerState:
                     for r in s.detector_records
                 ],
             }
-        self.path.write_text(json.dumps(raw, indent=2))
+        # Write via temp file + atomic rename to prevent partial reads,
+        # and use an exclusive lock to prevent concurrent write races
+        tmp = self.path.with_suffix(".tmp")
+        lock = self.path.with_suffix(".lock")
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock, "w") as lf:
+            try:
+                fcntl.flock(lf, fcntl.LOCK_EX)
+                tmp.write_text(json.dumps(raw, indent=2))
+                tmp.replace(self.path)
+            finally:
+                fcntl.flock(lf, fcntl.LOCK_UN)
         logger.debug("State: saved %d service records to %s", len(self._services), self.path)
 
     # ── Accessors ─────────────────────────────────────────────────────────────

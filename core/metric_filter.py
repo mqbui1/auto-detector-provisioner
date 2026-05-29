@@ -72,24 +72,16 @@ def probe_existing_metrics(
     import time
     import urllib.parse as _up
 
-    env_f = f'filter("sf_environment", "{environment}") and ' if environment else ""
-    svc_f = f'filter("sf_service", "{service}")'
-    combined = f"{env_f}{svc_f}"
-
     now_ms = int(time.time() * 1000)
     start_ms = now_ms - 3600 * 1000  # last 1 hour
 
     existing: set[str] = set()
 
-    # Batch into groups of 10 — each group is one SignalFlow job
-    metrics_list = sorted(candidate_metrics)
-    for batch_start in range(0, len(metrics_list), 10):
-        batch = metrics_list[batch_start:batch_start + 10]
-        # Publish each metric; check which ones return values
-        lines = [f'data("{m}", filter={combined}).sum(over="1h").publish("{i}")'
+    def _signalflow_probe(filter_expr: str, batch: list[str]) -> set[str]:
+        """Run a SignalFlow batch probe, return metric names that returned data."""
+        lines = [f'data("{m}", filter={filter_expr}).sum(over="1h").publish("{i}")'
                  for i, m in enumerate(batch)]
         program = "\n".join(lines)
-
         qs = _up.urlencode({"start": start_ms, "stop": now_ms,
                             "resolution": 3600000, "immediate": "true"})
         url = f"{api_base}/v2/signalflow/execute?{qs}"
@@ -97,6 +89,7 @@ def probe_existing_metrics(
             url, data=program.encode("utf-8"),
             headers={"X-SF-Token": token, "Content-Type": "text/plain"},
         )
+        found: set[str] = set()
         try:
             with urllib.request.urlopen(req, timeout=20) as resp:
                 data_lines: list[str] = []
@@ -123,11 +116,34 @@ def probe_existing_metrics(
                         current_event = None
                 for i, m in enumerate(batch):
                     if str(i) in seen_labels:
-                        existing.add(m)
+                        found.add(m)
         except Exception as e:
             logger.warning("metric_filter: probe failed for %s batch: %s", service, e)
-            # Fail open — keep all metrics in this batch
-            existing.update(batch)
+            found.update(batch)  # fail open
+        return found
+
+    # Build both filter expressions:
+    # 1. sf_service — APM-promoted metrics (service.request.count, spans.count, etc.)
+    # 2. service.name — OTel SDK runtime metrics (go.goroutine.count, nodejs.eventloop.*,
+    #    dotnet.gc.*, process.runtime.* etc.) that carry OTel resource attributes only
+    env_f_apm = f'filter("sf_environment", "{environment}") and ' if environment else ""
+    env_f_otel = f'filter("deployment.environment", "{environment}") and ' if environment else ""
+    filter_apm = f'{env_f_apm}filter("sf_service", "{service}")'
+    filter_otel = f'{env_f_otel}filter("service.name", "{service}")'
+
+    # Batch into groups of 10 — each group is one SignalFlow job
+    metrics_list = sorted(candidate_metrics)
+    for batch_start in range(0, len(metrics_list), 10):
+        batch = metrics_list[batch_start:batch_start + 10]
+
+        # Query 1: APM-promoted dimensions
+        found = _signalflow_probe(filter_apm, batch)
+        existing.update(found)
+
+        # Query 2: OTel resource dimensions — only for metrics not found in query 1
+        remaining = [m for m in batch if m not in found]
+        if remaining:
+            existing.update(_signalflow_probe(filter_otel, remaining))
 
     logger.debug("metric_filter: %s/%s — %d/%d metrics have recent data: %s",
                  environment, service, len(existing), len(candidate_metrics),

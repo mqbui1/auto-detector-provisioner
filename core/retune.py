@@ -78,37 +78,65 @@ def _api_patch(api_base: str, token: str, detector_id: str, body: dict) -> dict:
         raise RuntimeError(f"HTTP {e.code}: {(e.read() or b'')[:500].decode()}")
 
 
+def _replace_threshold(text: str, old_val: float, new_val: float) -> str:
+    """Replace a numeric threshold in SignalFlow using word-boundary regex to avoid partial matches."""
+    import re
+    old_s = str(old_val)
+    new_s = str(new_val)
+    if old_s == new_s:
+        return text
+    # Match the number only when preceded/followed by non-digit, non-dot (i.e. as a standalone literal)
+    pattern = r'(?<![0-9\.])' + re.escape(old_s) + r'(?![0-9\.])'
+    return re.sub(pattern, new_s, text)
+
+
 def _rebuild_signalflow(old_signalflow: str, old_baseline: dict, new_baseline: ServiceBaseline) -> str | None:
     """
     Replace threshold values in existing SignalFlow text using the new baseline.
+    Handles latency (mean ± N*stddev) and error rate thresholds.
     Returns updated SignalFlow or None if no change needed.
     """
     text = old_signalflow
 
-    old_mean = old_baseline.get("latency_mean_ms") or 0
-    old_std = old_baseline.get("latency_stddev_ms") or 0
+    old_lat_mean = old_baseline.get("latency_mean_ms") or 0
+    old_lat_std = old_baseline.get("latency_stddev_ms") or 0
+    old_err_rate = old_baseline.get("error_rate_pct")
 
-    if not old_mean or not new_baseline.latency_mean_ms:
-        return None
+    changed = False
 
-    # Only retune if drift exceeds threshold
-    mean_drift = _drift_pct(old_mean, new_baseline.latency_mean_ms)
-    std_drift = _drift_pct(old_std, new_baseline.latency_stddev_ms or 0)
+    # ── Latency thresholds ────────────────────────────────────────────────────
+    if old_lat_mean and new_baseline.latency_mean_ms:
+        mean_drift = _drift_pct(old_lat_mean, new_baseline.latency_mean_ms)
+        std_drift = _drift_pct(old_lat_std, new_baseline.latency_stddev_ms or 0)
 
-    if mean_drift < RETUNE_DRIFT_THRESHOLD and std_drift < RETUNE_DRIFT_THRESHOLD:
-        return None
+        if mean_drift >= RETUNE_DRIFT_THRESHOLD or std_drift >= RETUNE_DRIFT_THRESHOLD:
+            for n_sigma in [2.0, 3.0]:
+                old_t = round(old_lat_mean + n_sigma * old_lat_std, 1)
+                new_t = round(
+                    (new_baseline.latency_mean_ms or 0) + n_sigma * (new_baseline.latency_stddev_ms or 0),
+                    1,
+                )
+                new_text = _replace_threshold(text, old_t, new_t)
+                if new_text != text:
+                    text = new_text
+                    changed = True
 
-    # Replace old computed thresholds with new ones
-    # Dynamic thresholds follow pattern: mean + N*stddev
-    for n_sigma, label in [(2.0, "warn"), (3.0, "anomaly")]:
-        old_t = round(old_mean + n_sigma * old_std, 1)
-        new_t = round(
-            (new_baseline.latency_mean_ms or 0) + n_sigma * (new_baseline.latency_stddev_ms or 0),
-            1,
-        )
-        text = text.replace(str(old_t), str(new_t))
+    # ── Error rate threshold ──────────────────────────────────────────────────
+    if old_err_rate is not None and new_baseline.error_rate_pct is not None:
+        err_drift = _drift_pct(old_err_rate, new_baseline.error_rate_pct)
+        if err_drift >= RETUNE_DRIFT_THRESHOLD:
+            # Dynamic error rate detectors use mean + 2*stddev and mean + 3*stddev
+            # from the baseline error stats — approximate as scalar thresholds here
+            # since we only store the mean in the snapshot (stddev not stored yet).
+            # For now update the raw percentage threshold if it appears.
+            old_t = round(old_err_rate, 2)
+            new_t = round(new_baseline.error_rate_pct, 2)
+            new_text = _replace_threshold(text, old_t, new_t)
+            if new_text != text:
+                text = new_text
+                changed = True
 
-    return text if text != old_signalflow else None
+    return text if changed else None
 
 
 def retune_service(

@@ -93,6 +93,10 @@ def parse_args() -> argparse.Namespace:
                         help="Re-provision even if service is already in state")
     deploy.add_argument("--reconcile", action="store_true",
                         help="Diff existing detectors against current templates and update only changed ones")
+    deploy.add_argument("--notify", metavar="INTEGRATION_ID", action="append", default=[],
+                        help="Splunk Observability integration ID to notify on alert "
+                             "(repeat for multiple, e.g. --notify abc123 --notify def456). "
+                             "Find integration IDs at Settings > Integrations.")
 
     lifecycle = parser.add_argument_group("lifecycle")
     lifecycle.add_argument("--retune", action="store_true",
@@ -103,6 +107,8 @@ def parse_args() -> argparse.Namespace:
                            help="Remove muting rules for SERVICE")
     lifecycle.add_argument("--list-mutes", action="store_true",
                            help="List all active muting rules")
+    lifecycle.add_argument("--delete", action="store_true",
+                           help="Delete all detectors for SERVICE and remove from state (use for cleanup/reset)")
     lifecycle.add_argument("--archive", action="store_true",
                            help="Archive SERVICE — delete its detectors and mark decommissioned")
     lifecycle.add_argument("--archive-stale", action="store_true",
@@ -175,6 +181,26 @@ def main() -> int:
         )
         print(f"{'Unmuted' if ok else 'No active mute rules found for'} {args.service}")
         return 0
+
+    if args.delete:
+        if not args.service:
+            print("ERROR: --delete requires --service", file=sys.stderr)
+            return 1
+        result = archive_service(
+            realm=args.realm, token=args.token,
+            service=args.service, environment=args.environment or "",
+            state=state, dry_run=dry_run,
+            reason="manual delete via --delete flag",
+        )
+        print(f"\n{'[DRY RUN] Would delete' if dry_run else 'Deleted'} {result.detectors_deleted} "
+              f"detectors for {args.service}.")
+        if not dry_run and result.action == "archived":
+            # Remove from state entirely (unlike archive, --delete allows re-provisioning)
+            key = f"{args.environment or ''}/{args.service}"
+            state._services.pop(key, None)
+            state.save()
+            print(f"Removed {args.service} from state — re-run without --delete to re-provision.")
+        return 0 if result.action in ("archived", "skipped") else 1
 
     if args.archive:
         if not args.service:
@@ -333,12 +359,14 @@ def main() -> int:
                 realm=args.realm, token=args.token,
                 service=profile.service, environment=profile.environment,
                 detectors=detectors, dry_run=dry_run,
+                notify=args.notify or [],
             )
         else:
             results = deploy_detectors(
                 realm=args.realm, token=args.token,
                 service=profile.service, environment=profile.environment,
                 detectors=detectors, dry_run=dry_run,
+                notify=args.notify or [],
             )
         print(format_deploy_summary(results, dry_run))
 

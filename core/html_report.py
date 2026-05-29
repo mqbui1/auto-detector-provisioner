@@ -169,10 +169,36 @@ _CSS = """
 # ── JS ────────────────────────────────────────────────────────────────────────
 
 _JS = """
+// ── Filter bar ────────────────────────────────────────────────────────────────
+function applyFilters(){
+  var svcFilter = (document.getElementById('filter-svc') || {}).value || '';
+  var sevFilter = (document.getElementById('filter-sev') || {}).value || '';
+  var typeFilter = (document.getElementById('filter-type') || {}).value || '';
+  svcFilter = svcFilter.toLowerCase();
+
+  document.querySelectorAll('.service-card').forEach(function(card){
+    var svcName = (card.querySelector('.service-name') || {}).textContent || '';
+    var svcMatch = !svcFilter || svcName.toLowerCase().includes(svcFilter);
+
+    var visibleDets = 0;
+    card.querySelectorAll('.detector').forEach(function(det){
+      var sev = (det.querySelector('.sev-badge') || {}).textContent || '';
+      var type = det.dataset.thresholdType || '';
+      var sevMatch = !sevFilter || sev.toLowerCase() === sevFilter.toLowerCase();
+      var typeMatch = !typeFilter || type === typeFilter;
+      var show = svcMatch && sevMatch && typeMatch;
+      det.style.display = show ? '' : 'none';
+      if(show) visibleDets++;
+    });
+    card.style.display = (svcMatch && visibleDets > 0) ? '' : 'none';
+  });
+  updateSelCount();
+}
+
 // ── Checkbox state ────────────────────────────────────────────────────────────
 function updateSelCount(){
-  const total = document.querySelectorAll('.det-check').length;
-  const checked = document.querySelectorAll('.det-check:checked').length;
+  const total = document.querySelectorAll('.det-check:not([style*="display: none"])').length;
+  const checked = document.querySelectorAll('.det-check:checked:not([style*="display: none"])').length;
   document.getElementById('sel-count').textContent = checked + ' / ' + total + ' selected';
   document.getElementById('btn-deploy').disabled = checked === 0;
 }
@@ -287,7 +313,7 @@ def _detector_html(service: str, det: DetectorTemplate) -> str:
     sev_style = _severity_style(det.severity)
 
     badges = (
-        f'<span class="badge" style="{sev_style}">{html.escape(det.severity)}</span>'
+        f'<span class="badge sev-badge" style="{sev_style}">{html.escape(det.severity)}</span>'
         f'<span class="badge" style="{conf_style}">{conf_label}</span>'
         f'<span class="badge" style="{thresh_style}">{thresh_label}</span>'
     )
@@ -323,7 +349,7 @@ def _detector_html(service: str, det: DetectorTemplate) -> str:
     sf_escaped = html.escape(det.signalflow)
 
     return f"""
-<div class="detector" id="det-{det_id}">
+<div class="detector" id="det-{det_id}" data-threshold-type="{html.escape(det.threshold_type)}">
 <div class="detector-header">
   <input type="checkbox" class="det-check" id="cb-{det_id}" data-id="{det_id}" checked>
   <label class="detector-name" for="cb-{det_id}">{html.escape(det.name)}</label>
@@ -448,6 +474,22 @@ def generate_html_report(
   <div class="stat"><span class="n">{total_detectors}</span><span class="l">Detectors</span></div>
   <div class="stat"><span class="n">{total_dynamic}</span><span class="l">Dynamic</span></div>
   <div class="stat"><span class="n">{total_fixed}</span><span class="l">Fixed</span></div>
+  <div class="sep"></div>
+  <input id="filter-svc" placeholder="Filter service..." oninput="applyFilters()"
+         style="background:#0f172a;border:1px solid #334155;border-radius:4px;
+                padding:4px 8px;font-size:12px;color:#e2e8f0;width:140px">
+  <select id="filter-sev" onchange="applyFilters()"
+          style="background:#0f172a;border:1px solid #334155;border-radius:4px;
+                 padding:4px 8px;font-size:12px;color:#e2e8f0">
+    <option value="">All severities</option>
+    <option>Critical</option><option>Major</option><option>Warning</option><option>Minor</option>
+  </select>
+  <select id="filter-type" onchange="applyFilters()"
+          style="background:#0f172a;border:1px solid #334155;border-radius:4px;
+                 padding:4px 8px;font-size:12px;color:#e2e8f0">
+    <option value="">All thresholds</option>
+    <option value="dynamic">Dynamic</option><option value="fixed">Fixed</option>
+  </select>
   <div class="sep"></div>
   <button class="btn-sm" id="btn-all">Select all</button>
   <button class="btn-sm" id="btn-none">Deselect all</button>
