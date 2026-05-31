@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -42,9 +43,6 @@ def probe_existing_metrics(
     if not candidate_metrics:
         return set()
 
-    import time
-    import urllib.parse as _up
-
     now_ms = int(time.time() * 1000)
     start_ms = now_ms - 3600 * 1000  # last 1 hour
 
@@ -55,7 +53,7 @@ def probe_existing_metrics(
         lines = [f'data("{m}", filter={filter_expr}).sum(over="1h").publish("{i}")'
                  for i, m in enumerate(batch)]
         program = "\n".join(lines)
-        qs = _up.urlencode({"start": start_ms, "stop": now_ms,
+        qs = urllib.parse.urlencode({"start": start_ms, "stop": now_ms,
                             "resolution": 3600000, "immediate": "true"})
         url = f"{api_base}/v2/signalflow/execute?{qs}"
         req = urllib.request.Request(

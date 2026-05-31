@@ -323,8 +323,7 @@ def _detector_html(service: str, det: DetectorTemplate) -> str:
     # Threshold reason line — one-liner explaining why dynamic or fixed
     if det.threshold_type == "dynamic":
         # Extract the threshold values from the description (e.g. "Warn: >10.7ms  Anomaly: >12.2ms")
-        import re as _re
-        thresh_match = _re.search(r'(Warn[^<\n]+)', det.description)
+        thresh_match = re.search(r'(Warn[^<\n]+)', det.description)
         thresh_detail = thresh_match.group(1) if thresh_match else ""
         thresh_reason = (
             f'<div class="thresh-reason dynamic">&#128200; Thresholds learned from observed traffic baseline'

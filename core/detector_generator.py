@@ -14,6 +14,7 @@ from typing import Any
 
 from templates import TEMPLATE_REGISTRY
 from templates.apm import APMTemplates, DetectorTemplate
+from templates.database import DatabaseTemplates
 from .discovery import ServiceProfile
 from .baseline_learner import ServiceBaseline
 from .metric_filter import (
@@ -88,7 +89,6 @@ def generate_detectors(
 
         logger.info("Generator: adding %s detectors for %s/%s (confidence=%s)", tech, environment, service, confidence)
         try:
-            from templates.database import DatabaseTemplates
             if template_cls is DatabaseTemplates and tech in ("postgresql", "mysql", "mongodb"):
                 _add(template_cls.templates(service, environment, baseline, db_type=tech))
             else:

@@ -23,10 +23,9 @@ from .discovery import discover_services
 from .baseline_learner import learn_baseline, load_baseline
 from .detector_generator import generate_detectors
 from .detector_deployer import deploy_detectors, DeployResult
-from .retune import retune_service, baseline_hash, format_retune_summary
-from .archive import archive_stale_services, format_archive_summary
+from .retune import retune_service, baseline_hash, format_retune_summary, signalflow_hash
+from .archive import archive_stale_services, archive_service, format_archive_summary
 from .state import ProvisionerState, DetectorRecord, STATE_FILE
-from .retune import signalflow_hash
 
 logger = logging.getLogger(__name__)
 
@@ -287,7 +286,6 @@ class WatchDaemon:
                         days_absent,
                     )
                     if cfg.auto_archive:
-                        from .archive import archive_service
                         result = archive_service(
                             realm=cfg.realm,
                             token=cfg.token,

@@ -135,14 +135,15 @@ def _rebuild_signalflow(old_signalflow: str, old_baseline: dict, new_baseline: S
                     changed = True
 
     # ── Error rate thresholds ─────────────────────────────────────────────────
+    # apm.py generates: warn=max(mean*2, 1.0), anomaly=max(mean*4, 5.0)
     if old_err_mean is not None and new_baseline.error_rate_pct is not None:
         err_drift = _drift_pct(old_err_mean, new_baseline.error_rate_pct)
-        new_err_std = new_baseline.error_rate_stddev_pct or 0
-        if err_drift >= RETUNE_DRIFT_THRESHOLD or _drift_pct(old_err_std, new_err_std) >= RETUNE_DRIFT_THRESHOLD:
-            # Dynamic error rate detectors use mean + N*stddev thresholds
-            for n_sigma in [2.0, 3.0]:
-                old_t = round(old_err_mean + n_sigma * old_err_std, 2)
-                new_t = round((new_baseline.error_rate_pct or 0) + n_sigma * new_err_std, 2)
+        if err_drift >= RETUNE_DRIFT_THRESHOLD:
+            old_warn = round(max(old_err_mean * 2, 1.0), 2)
+            old_anomaly = round(max(old_err_mean * 4, 5.0), 2)
+            new_warn = round(max(new_baseline.error_rate_pct * 2, 1.0), 2)
+            new_anomaly = round(max(new_baseline.error_rate_pct * 4, 5.0), 2)
+            for old_t, new_t in [(old_warn, new_warn), (old_anomaly, new_anomaly)]:
                 new_text = _replace_threshold(text, old_t, new_t)
                 if new_text != text:
                     text = new_text
