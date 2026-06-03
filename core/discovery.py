@@ -62,7 +62,7 @@ SPAN_FINGERPRINTS: dict[str, dict[str, list[str]]] = {
     "messaging_system": {
         "kafka":      ["kafka"],
         "rabbitmq":   ["rabbitmq"],
-        "sqs":        ["aws_sqs"],
+        "aws_sqs":    ["aws_sqs"],
         "pubsub":     ["gcp_pubsub"],
         "activemq":   ["activemq"],
         "celery":     ["celery"],
@@ -452,7 +452,7 @@ def _build_profile(
     # These are the only ones that get library-specific detector templates applied.
     # Metric-only detections (e.g. a shared Redis metric on the host) are excluded.
     db_libs = {"kafka", "redis", "postgresql", "mysql", "mongodb", "rabbitmq",
-               "elasticsearch", "cassandra", "dynamodb"}
+               "elasticsearch", "cassandra", "dynamodb", "mssql"}
     profile.direct_clients = {k for k in span_detected if k in db_libs}
 
     return profile

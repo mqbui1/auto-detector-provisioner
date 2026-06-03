@@ -68,7 +68,7 @@ def generate_detectors(
     # Library techs that require direct span evidence (db.system / messaging.system)
     # to avoid false positives from shared infra metrics
     SPAN_GATED_LIBS = {"kafka", "redis", "postgresql", "mysql", "mongodb", "rabbitmq",
-                       "elasticsearch", "cassandra", "dynamodb", "celery"}
+                       "elasticsearch", "cassandra", "dynamodb", "mssql", "celery"}
 
     # Stack/framework/library detectors
     for tech in all_detected:
@@ -89,7 +89,7 @@ def generate_detectors(
 
         logger.info("Generator: adding %s detectors for %s/%s (confidence=%s)", tech, environment, service, confidence)
         try:
-            if template_cls is DatabaseTemplates and tech in ("postgresql", "mysql", "mongodb"):
+            if template_cls is DatabaseTemplates and tech in ("postgresql", "mysql", "mongodb", "dynamodb", "mssql"):
                 _add(template_cls.templates(service, environment, baseline, db_type=tech))
             else:
                 _add(template_cls.templates(service, environment, baseline))

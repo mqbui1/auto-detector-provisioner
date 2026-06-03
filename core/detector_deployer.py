@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -15,6 +16,60 @@ from dataclasses import dataclass
 from templates.apm import DetectorTemplate
 
 logger = logging.getLogger(__name__)
+
+_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+_MAX_RETRIES = 3
+
+
+def _urlopen_with_retry(
+    req: urllib.request.Request,
+    timeout: int = 30,
+    retry_statuses: frozenset = _RETRY_STATUSES,
+) -> bytes:
+    """Execute an HTTP request with exponential backoff on transient failures."""
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                chunks = []
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                return b"".join(chunks)
+        except urllib.error.HTTPError as e:
+            body = b""
+            try:
+                body = e.read() or b""
+            except Exception:
+                pass
+            if e.code in retry_statuses and attempt < _MAX_RETRIES:
+                wait = 2 ** attempt  # 1, 2, 4 seconds
+                logger.warning("HTTP %d — retrying in %ds (attempt %d/%d)",
+                               e.code, wait, attempt + 1, _MAX_RETRIES)
+                time.sleep(wait)
+                continue
+            raise RuntimeError(f"HTTP {e.code}: {body[:500].decode(errors='replace')}")
+    raise RuntimeError("unreachable")  # pragma: no cover
+
+
+def _validate_signalflow(api_base: str, token: str, program: str) -> str | None:
+    """Validate SignalFlow program text via /v2/signalflow/validate.
+    Returns an error string if invalid, or None if valid.
+    """
+    req = urllib.request.Request(
+        f"{api_base}/v2/signalflow/validate",
+        data=program.encode("utf-8"),
+        headers={"X-SF-Token": token, "Content-Type": "text/plain"},
+        method="POST",
+    )
+    try:
+        # Only retry on rate-limit — 400 means invalid program (don't retry)
+        _urlopen_with_retry(req, retry_statuses=frozenset({429, 503, 504}))
+        return None
+    except RuntimeError as e:
+        return str(e)
+
 
 SEVERITY_TO_NOTIFICATION_SEVERITY = {
     "Critical": "Critical",
@@ -37,53 +92,28 @@ def _api_get(api_base: str, token: str, path: str, params: dict | None = None) -
     qs = urllib.parse.urlencode({k: v for k, v in (params or {}).items() if v is not None})
     url = f"{api_base}{path}" + (f"?{qs}" if qs else "")
     req = urllib.request.Request(url, headers={"X-SF-Token": token, "Accept": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            chunks = []
-            while True:
-                chunk = resp.read(65536)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-            return json.loads(b"".join(chunks).decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"HTTP {e.code}: {(e.read() or b'')[:300].decode()}")
+    return json.loads(_urlopen_with_retry(req).decode("utf-8"))
 
 
 def _api_put(api_base: str, token: str, path: str, body: dict) -> dict:
     url = f"{api_base}{path}"
-    data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
-        url, data=data,
+        url, data=json.dumps(body).encode("utf-8"),
         headers={"X-SF-Token": token, "Content-Type": "application/json"},
         method="PUT",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            chunks = []
-            while True:
-                chunk = resp.read(65536)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-            return json.loads(b"".join(chunks).decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"HTTP {e.code}: {(e.read() or b'')[:500].decode()}")
+    return json.loads(_urlopen_with_retry(req).decode("utf-8"))
 
 
 def _api_post(api_base: str, token: str, path: str, body: dict) -> dict:
     url = f"{api_base}{path}"
-    data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
-        url, data=data,
+        url, data=json.dumps(body).encode("utf-8"),
         headers={"X-SF-Token": token, "Content-Type": "application/json"},
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"HTTP {e.code}: {(e.read() or b'')[:500].decode()}")
+    # POST is not idempotent — only retry on 429 (rate limit), not on 5xx
+    return json.loads(_urlopen_with_retry(req, retry_statuses=frozenset({429})).decode("utf-8"))
 
 
 def _normalize_signalflow(sf: str) -> str:
@@ -209,6 +239,15 @@ def reconcile_detectors(
 
             try:
                 payload = _build_detector_payload(template, service, environment, notify=notify)
+                validation_err = _validate_signalflow(api_base, token, payload["programText"])
+                if validation_err:
+                    logger.error("Invalid SignalFlow for %s: %s", template.name, validation_err)
+                    results.append(DeployResult(
+                        detector_name=template.name,
+                        success=False,
+                        error=f"SignalFlow validation failed: {validation_err}",
+                    ))
+                    continue
                 updated = _api_put(api_base, token, f"/v2/detector/{existing_det['id']}", {
                     **existing_det,
                     "programText": fresh_prog,
@@ -242,6 +281,15 @@ def reconcile_detectors(
                 continue
             try:
                 payload = _build_detector_payload(template, service, environment, notify=notify)
+                validation_err = _validate_signalflow(api_base, token, payload["programText"])
+                if validation_err:
+                    logger.error("Invalid SignalFlow for %s: %s", template.name, validation_err)
+                    results.append(DeployResult(
+                        detector_name=template.name,
+                        success=False,
+                        error=f"SignalFlow validation failed: {validation_err}",
+                    ))
+                    continue
                 response = _api_post(api_base, token, "/v2/detector", payload)
                 detector_id = response.get("id", "unknown")
                 logger.info("Created detector: %s (id=%s)", template.name, detector_id)
@@ -304,6 +352,15 @@ def deploy_detectors(
 
         try:
             payload = _build_detector_payload(template, service, environment, notify=notify)
+            validation_err = _validate_signalflow(api_base, token, payload["programText"])
+            if validation_err:
+                logger.error("Invalid SignalFlow for %s: %s", template.name, validation_err)
+                results.append(DeployResult(
+                    detector_name=template.name,
+                    success=False,
+                    error=f"SignalFlow validation failed: {validation_err}",
+                ))
+                continue
             existing = existing_by_name.get(template.name)
             if existing:
                 # Update in-place to avoid duplicate

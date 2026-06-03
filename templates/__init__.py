@@ -43,6 +43,8 @@ TEMPLATE_REGISTRY: dict[str, type] = {
     "flask":         FlaskTemplates,
     "fastapi":       FastAPITemplates,
     "express":       ExpressTemplates,
+    "gin":           GoTemplates,
+    "fiber":         GoTemplates,
     "grpc":          GRPCTemplates,
     "graphql":       GraphQLTemplates,
     # Messaging / streaming
@@ -54,6 +56,8 @@ TEMPLATE_REGISTRY: dict[str, type] = {
     "postgresql":    DatabaseTemplates,
     "mysql":         DatabaseTemplates,
     "mongodb":       DatabaseTemplates,
+    "dynamodb":      DatabaseTemplates,
+    "mssql":         DatabaseTemplates,
     "elasticsearch": ElasticsearchTemplates,
     "cassandra":     CassandraTemplates,
     # Infrastructure

@@ -183,12 +183,23 @@ def _learn_apm_baseline(api_base: str, token: str, service: str, environment: st
             error_values = vals
             break
 
+    # Request rate — average requests per minute; used for request-drop detector
+    req_values: list[float] = []
+    for req_metric in ["service.request.count", "spans.count"]:
+        prog = f'data("{req_metric}", filter={base_filter}).sum(over="1m").publish()'
+        vals = _execute_signalflow(api_base, token, prog, start_ms, now_ms)
+        if vals:
+            req_values = vals
+            break
+
     latency_stats = _compute_stats(latency_values)
     error_stats = _compute_stats(error_values)
+    req_stats = _compute_stats(req_values)
 
     return {
         "latency": latency_stats,
         "error_rate": error_stats,
+        "request_rate": req_stats,
     }
 
 
@@ -241,6 +252,9 @@ def learn_baseline(
         if err["count"] > 0:
             baseline.error_rate_pct = err["mean"]
             baseline.error_rate_stddev_pct = err["stddev"]
+        req = apm["request_rate"]
+        if req["count"] > 0:
+            baseline.request_rate_per_min = req["mean"]
         logger.info("Baseline: APM latency=%.1fms p99=%.1fms error_rate=%.2f%%",
                     baseline.latency_mean_ms or 0,
                     baseline.latency_p99_ms or 0,

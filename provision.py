@@ -114,6 +114,8 @@ def parse_args() -> argparse.Namespace:
                            help="Archive SERVICE — delete its detectors and mark decommissioned")
     lifecycle.add_argument("--archive-stale", action="store_true",
                            help="Scan for services not seen in --stale-days and archive them")
+    lifecycle.add_argument("--status", action="store_true",
+                           help="Show all provisioned services, their detectors, and current state")
     lifecycle.add_argument("--stale-days", type=float, default=7.0, metavar="N",
                            help="Days of inactivity before a service is considered stale (default: 7)")
 
@@ -148,6 +150,34 @@ def main() -> int:
     dry_run = not args.auto_deploy
 
     # ── Lifecycle commands (don't provision) ─────────────────────────────────
+
+    if args.status:
+        services = state.all_services()
+        if not services:
+            print("No services provisioned yet.")
+            return 0
+        active = [s for s in services if not s.archived]
+        archived = [s for s in services if s.archived]
+        print(f"\nPROVISIONED SERVICES ({len(active)} active, {len(archived)} archived)")
+        print("─" * 60)
+        now = time.time()
+        for svc in sorted(services, key=lambda s: (s.archived, f"{s.environment}/{s.service}")):
+            status_label = "archived" if svc.archived else ("muted" if svc.is_muted() else "active")
+            prov_dt = datetime.datetime.utcfromtimestamp(svc.provisioned_at).strftime("%Y-%m-%d %H:%M UTC")
+            retune_dt = (datetime.datetime.utcfromtimestamp(svc.last_retune_at).strftime("%Y-%m-%d %H:%M UTC")
+                         if svc.last_retune_at else "never")
+            det_ids = svc.detector_ids()
+            id_preview = ", ".join(det_ids[:4]) + ("…" if len(det_ids) > 4 else "")
+            print(f"\n  {svc.environment}/{svc.service}  [{status_label}]")
+            print(f"    Provisioned:  {prov_dt}")
+            print(f"    Last retune:  {retune_dt}")
+            print(f"    Baseline:     {svc.baseline_hash or 'none'}")
+            print(f"    Detectors:    {len(det_ids)}  {id_preview}")
+            if svc.is_muted():
+                mute_dt = datetime.datetime.utcfromtimestamp(svc.muted_until).strftime("%Y-%m-%d %H:%M UTC")
+                print(f"    Muted until:  {mute_dt}")
+        print()
+        return 0
 
     if args.list_mutes:
         windows = list_active_mutes(args.realm, args.token, args.environment)
