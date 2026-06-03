@@ -219,8 +219,16 @@ def list_active_mutes(realm: str, token: str, environment: str | None = None) ->
     now = time.time()
 
     try:
-        resp = _api_get(api_base, token, "/v2/muterule")
-        rules = resp.get("results") or []
+        rules: list[dict] = []
+        offset = 0
+        limit = 100
+        while True:
+            resp = _api_get(api_base, token, f"/v2/muterule?limit={limit}&offset={offset}")
+            page = resp.get("results") or []
+            rules.extend(page)
+            if len(page) < limit:
+                break
+            offset += limit
         windows = []
 
         for rule in rules:

@@ -124,7 +124,11 @@ class WatchDaemon:
         for profile in new_services:
             if not self._running:
                 break
-            self._provision_new(profile)
+            try:
+                self._provision_new(profile)
+            except Exception as e:
+                logger.error("Watch: failed to provision %s/%s: %s",
+                             profile.environment, profile.service, e)
 
         # ── Step 3: Retune existing services ──────────────────────────────────
         for profile in existing_services:
@@ -135,7 +139,11 @@ class WatchDaemon:
                 logger.debug("Watch: %s/%s is muted — skipping retune",
                              profile.environment, profile.service)
                 continue
-            self._retune_if_needed(profile)
+            try:
+                self._retune_if_needed(profile)
+            except Exception as e:
+                logger.error("Watch: failed to retune %s/%s: %s",
+                             profile.environment, profile.service, e)
 
         # ── Step 4: Check for stale services ──────────────────────────────────
         active_keys = {

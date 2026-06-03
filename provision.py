@@ -390,7 +390,7 @@ def main() -> int:
             )
             for r in results if r.success
         ]
-        if not dry_run or args.force_reprovision:
+        if not dry_run:
             b_snapshot = {
                 "latency_mean_ms": baseline.latency_mean_ms if baseline else None,
                 "latency_stddev_ms": baseline.latency_stddev_ms if baseline else None,
