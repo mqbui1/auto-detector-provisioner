@@ -72,6 +72,11 @@ SPAN_FINGERPRINTS: dict[str, dict[str, list[str]]] = {
         "dotnet_wcf": ["dotnet_wcf"],
         "java_rmi":   ["java_rmi"],
     },
+    # OTel Gen AI semantic conventions — any gen_ai.system value means LLM/agentic service
+    "gen_ai_system": {
+        "genai": ["openai", "anthropic", "cohere", "vertex_ai", "bedrock", "mistral",
+                  "ollama", "hugging_face", "azure", "grok", "deepseek", "groq"],
+    },
     "http_framework": {
         "spring":     ["spring", "spring_boot", "spring-webmvc"],
         "django":     ["django"],
@@ -357,6 +362,17 @@ def _detect_stack_from_spans(spans: list[dict]) -> dict[str, str]:
             if any(rpc_val.startswith(v) for v in values):
                 detected[tech] = "high"
 
+    # Check gen_ai.system — OTel Gen AI semantic conventions
+    for ai_val in attr_values.get("gen_ai.system", set()):
+        matched = False
+        for tech, values in SPAN_FINGERPRINTS["gen_ai_system"].items():
+            if any(ai_val.startswith(v) for v in values):
+                detected[tech] = "high"
+                matched = True
+        if not matched:
+            # Unknown provider but gen_ai.system is set → still an AI service
+            detected["genai"] = "high"
+
     # Check http.framework
     for fw_val in (attr_values.get("http.framework", set()) | attr_values.get("http.flavor", set())):
         for tech, values in SPAN_FINGERPRINTS["http_framework"].items():
@@ -441,7 +457,7 @@ def _build_profile(
                   "aspnetcore", "gin", "fiber", "grpc", "graphql", "nextjs"}
     libraries = {"kafka", "redis", "postgresql", "mysql", "mongodb", "rabbitmq", "celery",
                  "aws_rds", "aws_lambda", "aws_ecs", "aws_sqs", "kubernetes",
-                 "elasticsearch", "cassandra", "dynamodb", "nginx", "istio"}
+                 "elasticsearch", "cassandra", "dynamodb", "nginx", "istio", "genai"}
 
     for key in all_keys:
         if key in stacks:
@@ -455,7 +471,7 @@ def _build_profile(
     # These are the only ones that get library-specific detector templates applied.
     # Metric-only detections (e.g. a shared Redis metric on the host) are excluded.
     db_libs = {"kafka", "redis", "postgresql", "mysql", "mongodb", "rabbitmq",
-               "elasticsearch", "cassandra", "dynamodb", "mssql"}
+               "elasticsearch", "cassandra", "dynamodb", "mssql", "genai"}
     profile.direct_clients = {k for k in span_detected if k in db_libs}
 
     # Criticality: count unique upstream callers from server-side spans.

@@ -70,7 +70,7 @@ def generate_detectors(
     # Library techs that require direct span evidence (db.system / messaging.system)
     # to avoid false positives from shared infra metrics
     SPAN_GATED_LIBS = {"kafka", "redis", "postgresql", "mysql", "mongodb", "rabbitmq",
-                       "elasticsearch", "cassandra", "dynamodb", "mssql", "celery"}
+                       "elasticsearch", "cassandra", "dynamodb", "mssql", "celery", "genai"}
 
     # Stack/framework/library detectors
     for tech in all_detected:
@@ -110,12 +110,19 @@ def generate_detectors(
             existing = probe_existing_metrics(
                 api_base, token, service, environment, all_candidates
             )
-            before = len(detectors)
-            detectors = filter_detectors_by_metric_existence(detectors, existing)
-            dropped = before - len(detectors)
-            if dropped:
-                logger.info("Generator: metric probe dropped %d detectors with no data for %s/%s",
-                            dropped, environment, service)
+            if not existing:
+                # Probe returned nothing — likely sparse/intermittent traffic in the
+                # 1h probe window. Treat as inconclusive and keep all detectors rather
+                # than dropping everything (fail open).
+                logger.info("Generator: metric probe inconclusive for %s/%s — keeping all detectors",
+                            environment, service)
+            else:
+                before = len(detectors)
+                detectors = filter_detectors_by_metric_existence(detectors, existing)
+                dropped = before - len(detectors)
+                if dropped:
+                    logger.info("Generator: metric probe dropped %d detectors with no data for %s/%s",
+                                dropped, environment, service)
 
         # HTTP status code gate — gRPC-only services don't emit http.status_code so
         # HTTP 4xx/5xx detectors would never fire; drop them to avoid ghost detectors.

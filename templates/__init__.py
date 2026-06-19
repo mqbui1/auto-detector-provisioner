@@ -24,6 +24,7 @@ from .celery import CeleryTemplates
 from .nginx import NginxTemplates
 from .istio import IstioTemplates
 from .host import HostTemplates
+from .genai import GenAITemplates
 
 # Registry: detected technology → template class
 TEMPLATE_REGISTRY: dict[str, type] = {
@@ -65,6 +66,8 @@ TEMPLATE_REGISTRY: dict[str, type] = {
     "nginx":         NginxTemplates,
     "istio":         IstioTemplates,
     "host":          HostTemplates,
+    # GenAI / Agentic AI
+    "genai":         GenAITemplates,
     # Cloud
     "aws_ec2":       AWSTemplates,
     "aws_rds":       AWSTemplates,

@@ -181,7 +181,7 @@ class ReportServer:
 
     def open_browser(self) -> None:
         # Open file:// for instant load; server handles /deploy POST separately
-        webbrowser.open(self.report_path.as_uri())
+        webbrowser.open(self.report_path.resolve().as_uri())
 
     def wait(self) -> None:
         """Block until Ctrl-C."""
