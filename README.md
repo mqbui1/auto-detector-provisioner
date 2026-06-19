@@ -43,6 +43,90 @@ Automatically discovers services in Splunk Observability Cloud, detects their te
 | **HTTP patterns** | 429 rate limiting, 401/403 auth failures, 502/503/504 gateway errors (all HTTP services) |
 | **Batch/Cron** | Job failures, duration anomaly, missed schedule |
 | **Observability** | OTel span export errors, metric reporting gaps, sampler drop rate |
+| **GenAI / Agentic** | LLM operation duration, token rate spike, API error rate, context window saturation, tool failure rate, response truncation, agent invocation error rate |
+
+## GenAI / Agentic AI detectors
+
+Services using LLM APIs or agentic frameworks (LangChain, LangGraph, AutoGen, Bedrock agents, OpenAI Assistants) are automatically detected from span attributes and get a dedicated set of detectors on top of the standard APM and runtime coverage.
+
+### Detection
+
+The provisioner fingerprints GenAI services by looking for any of these span attributes:
+
+| Attribute | Example values |
+|---|---|
+| `gen_ai.system` | `openai`, `anthropic`, `vertex_ai`, `bedrock` |
+| `gen_ai.provider.name` | `bedrockconversellm`, `anthropic` (LangChain convention) |
+| `gen_ai.operation.name` | `chat`, `execute_tool`, `invoke_agent` |
+| `otel.scope.name` | `opentelemetry.util.genai.handler`, `opentelemetry-instrumentation-openai` |
+
+Detection requires live span evidence — services that only emit the label without actual gen_ai spans will not receive GenAI detectors.
+
+### Detectors
+
+| Detector | Signal | Default thresholds | Upgrades to dynamic when |
+|---|---|---|---|
+| **LLM operation duration** | `gen_ai.client.operation.duration` p99 | 30s warn / 60s critical | APM p99 baseline available (upgrades immediately) |
+| **LLM token usage rate spike** | `gen_ai.client.token.usage` 5m sum vs 1h trailing avg | >2× warn / >4× critical | Self-calibrating — always dynamic |
+| **LLM API error rate** | `error.type` dimension on LLM spans | 5% warn / 20% critical | Fixed by design — high error rates are never acceptable |
+| **Context window saturation** | `gen_ai.client.token.usage` input token p95 | 50k warn / 100k critical | `genai_input_token_p95` baseline available: 2×/3.5× p95 |
+| **Agent tool call failure rate** | `execute_tool` errors / total tool calls | 30% warn / 60% critical | `genai_tool_failure_rate_pct` baseline available: 2×/3.5× rate |
+| **LLM response truncation rate** | `finish_reason=length` / total responses | 10% warn / 30% critical | `genai_truncation_rate_pct` baseline available: 2×/4× rate |
+| **Agent invocation error rate** | `sf_kind=SERVER` spans with `sf_error=true` | 10% warn / 25% critical | Fixed by design — root span errors always indicate real failures |
+
+### Why a separate error rate detector?
+
+Agentic services routinely show **80–95% aggregate error rates** because every intermediate tool call, planning step, and retry is a span — most are marked `sf_error=true`. The standard APM error rate detector normalises against this (thresholds set at 2×/4× baseline), but the **Agent invocation error rate** detector filters to `sf_kind=SERVER` spans only, isolating the user-facing request outcomes from internal agent loop mechanics. This gives a meaningful signal that an agent is actually failing to complete tasks, not just making retries.
+
+### Agentic baseline learning
+
+In addition to standard APM latency/error baselines, the provisioner attempts to learn GenAI-specific signals from `gen_ai.*` OTel metrics:
+
+- `genai_operation_duration_p99_s` — LLM call p99 in seconds (direct, more accurate than APM conversion)
+- `genai_input_token_p95` — p95 input tokens per request (context saturation baseline)
+- `genai_truncation_rate_pct` — baseline truncation rate (% responses with `finish_reason=length`)
+- `genai_tool_failure_rate_pct` — baseline tool failure rate (% `execute_tool` calls that error)
+
+These fields are populated only when the service emits the standard `gen_ai.client.operation.duration` and `gen_ai.client.token.usage` OTel metrics. Services using span-only instrumentation (e.g. `opentelemetry.util.genai.handler`) will have `None` for these fields and the corresponding detectors will use fixed defaults until the instrumentation is upgraded.
+
+GenAI baselines follow the same lifecycle as APM baselines: cached in `data/baselines/`, TTL 14 days, included in retune drift detection, and carried over when bootstrapping a new service from a similar service's baseline.
+
+### Example output — agentic service
+
+```
+SERVICE: travel-planner  ENV: agentic-ai-galileo-d88f
+
+DETECTED TECHNOLOGIES:
+  Stacks:     python
+  Libraries:  genai, kubernetes
+
+LEARNED BASELINE:
+  Latency mean:   114694.3ms
+  Latency p99:    317866.9ms
+  Error rate:     87.88%
+  Request rate:   1.4/min
+  Sample count:   552  (σ bands: 2.0σ/3.0σ)
+
+DETECTORS TO CREATE (21):
+
+  [GENAI]
+    ✓ 📈 [Major] LLM operation duration high
+       Warn: >317.9s  Critical: >476.8s (1.5× p99 baseline)
+    ✓ 📈 [Major] LLM token usage rate spike
+       Warn: >2× trailing avg  Critical: >4×
+    ✓ 📏 [Critical] LLM API error rate high
+       Warn: >5%  Critical: >20%
+    ~ 📏 [Warning] LLM context window saturation
+       Warn: >50,000 tokens  Critical: >100,000 tokens
+    ~ 📏 [Major] Agent tool call failure rate high
+       Warn: >30%  Critical: >60%
+    ~ 📏 [Warning] LLM response truncation rate high
+       Warn: >10%  Critical: >30%
+    ✓ 📏 [Critical] Agent invocation error rate high
+       Warn: >10%  Critical: >25% (SERVER spans only)
+```
+
+The 87.88% aggregate error rate is expected for an agentic service — the `Agent invocation error rate` detector ignores this and only alerts when end-to-end agent tasks fail.
 
 ## Baseline learning
 
@@ -273,5 +357,6 @@ templates/
     ├── istio.py          — sidecar errors, circuit breaker, mTLS, retry budget
     ├── host.py           — CPU, memory, disk I/O, network, file descriptors
     ├── aws.py            — Lambda, RDS, SQS, ECS
+    ├── genai.py          — LLM duration, token spike, API errors, context saturation, tool failures, truncation, agent root errors
     └── http_patterns.py  — 429/401/403/5xx patterns, batch jobs, observability quality
 ```
