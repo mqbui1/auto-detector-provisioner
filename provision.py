@@ -42,13 +42,13 @@ import time
 from pathlib import Path
 
 from core.discovery import discover_services
-from core.baseline_learner import learn_baseline, load_baseline
+from core.baseline_learner import learn_baseline, load_baseline, find_similar_baseline
 from core.detector_generator import generate_detectors, format_dry_run_report
 from core.detector_deployer import deploy_detectors, reconcile_detectors, format_deploy_summary
 from core.html_report import generate_html_report, _det_id
 from core.report_server import ReportServer
 from core.state import ProvisionerState, DetectorRecord, STATE_FILE
-from core.retune import retune_service, baseline_hash, signalflow_hash, format_retune_summary
+from core.retune import retune_service, baseline_hash, signalflow_hash, format_retune_summary, audit_detector_effectiveness
 from core.mute import mute_service, unmute_service, list_active_mutes, format_mute_list
 from core.archive import archive_service, archive_stale_services, format_archive_summary
 from core.watch import WatchDaemon, WatchConfig
@@ -73,8 +73,8 @@ def parse_args() -> argparse.Namespace:
     baseline = parser.add_argument_group("baseline")
     baseline.add_argument("--skip-baseline", action="store_true",
                           help="Skip baseline learning — use fixed best-practice thresholds only")
-    baseline.add_argument("--baseline-window-hours", type=int, default=24, metavar="N",
-                          help="Lookback window for baseline learning (default: 24h)")
+    baseline.add_argument("--baseline-window-hours", type=int, default=168, metavar="N",
+                          help="Lookback window for baseline learning (default: 168h = 7 days)")
     baseline.add_argument("--baseline-dir", type=Path, default=Path("data/baselines"),
                           help="Directory to store/load learned baselines")
 
@@ -116,6 +116,8 @@ def parse_args() -> argparse.Namespace:
                            help="Scan for services not seen in --stale-days and archive them")
     lifecycle.add_argument("--status", action="store_true",
                            help="Show all provisioned services, their detectors, and current state")
+    lifecycle.add_argument("--audit", action="store_true",
+                           help="Audit detector effectiveness — show alert event rates and noisy/silent detectors")
     lifecycle.add_argument("--stale-days", type=float, default=7.0, metavar="N",
                            help="Days of inactivity before a service is considered stale (default: 7)")
 
@@ -176,6 +178,34 @@ def main() -> int:
             if svc.is_muted():
                 mute_dt = datetime.datetime.utcfromtimestamp(svc.muted_until).strftime("%Y-%m-%d %H:%M UTC")
                 print(f"    Muted until:  {mute_dt}")
+        print()
+        return 0
+
+    if args.audit:
+        report = audit_detector_effectiveness(
+            realm=args.realm,
+            token=args.token,
+            state=state,
+            environment=args.environment,
+        )
+        if not report:
+            print("No provisioned detectors found to audit.")
+            return 0
+        noisy = [r for r in report if r["verdict"] == "noisy"]
+        silent = [r for r in report if r["verdict"] == "silent"]
+        ok = [r for r in report if r["verdict"] == "ok"]
+        print(f"\nDETECTOR AUDIT (last 7 days)  — {len(report)} detectors")
+        print("─" * 60)
+        if noisy:
+            print(f"\nNOISY (>{10}/day) — consider widening thresholds:")
+            for r in sorted(noisy, key=lambda x: -x["events_per_day"]):
+                print(f"  {r['events_per_day']:5.1f}/day  {r['environment']}/{r['service']}  {r['detector_name']}")
+        if silent:
+            print(f"\nSILENT (0 events) — verify metric data exists:")
+            for r in silent:
+                print(f"        —  {r['environment']}/{r['service']}  {r['detector_name']}")
+        if ok:
+            print(f"\nOK ({len(ok)} detectors firing within normal range)")
         print()
         return 0
 
@@ -364,6 +394,17 @@ def main() -> int:
                 window_hours=args.baseline_window_hours,
                 output_dir=args.baseline_dir,
             )
+            # If service has no telemetry history, borrow from a similar same-env service
+            if baseline and not baseline.is_reliable():
+                borrowed = find_similar_baseline(
+                    service=profile.service,
+                    environment=profile.environment,
+                    stacks=profile.stacks,
+                    baseline_dir=args.baseline_dir,
+                )
+                if borrowed:
+                    print(f"  Baseline: borrowed from similar service in {profile.environment}", file=sys.stderr)
+                    baseline = borrowed
         if baseline and baseline.is_reliable():
             err_str = f"{baseline.error_rate_pct:.2f}%" if baseline.error_rate_pct is not None else "n/a"
             print(f"  Baseline: latency={baseline.latency_mean_ms:.1f}ms "
@@ -423,6 +464,8 @@ def main() -> int:
         if not dry_run:
             b_snapshot = {
                 "latency_mean_ms": baseline.latency_mean_ms if baseline else None,
+                "latency_p95_ms": baseline.latency_p95_ms if baseline else None,
+                "latency_p99_ms": baseline.latency_p99_ms if baseline else None,
                 "latency_stddev_ms": baseline.latency_stddev_ms if baseline else None,
                 "error_rate_pct": baseline.error_rate_pct if baseline else None,
                 "error_rate_stddev_pct": baseline.error_rate_stddev_pct if baseline else None,

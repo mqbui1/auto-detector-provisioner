@@ -63,7 +63,8 @@ def generate_detectors(
 
     # APM detectors always apply
     logger.info("Generator: adding APM detectors for %s/%s", environment, service)
-    _add(APMTemplates.templates(service, environment, baseline))
+    _add(APMTemplates.templates(service, environment, baseline,
+                                is_critical_path=profile.is_critical_path))
 
     # Library techs that require direct span evidence (db.system / messaging.system)
     # to avoid false positives from shared infra metrics
@@ -139,16 +140,23 @@ def format_dry_run_report(
         lines.append(f"  Libraries:  {', '.join(profile.libraries)}")
     if not profile.all_detected():
         lines.append("  (none detected — APM-only detectors will be generated)")
+    if profile.is_critical_path:
+        lines.append(f"  ⚡ CRITICAL PATH — {profile.fan_in_count} upstream callers → Critical severity applied")
 
     if baseline:
         lines.append("\nLEARNED BASELINE:")
         if baseline.latency_mean_ms:
             lines.append(f"  Latency mean:   {baseline.latency_mean_ms:.1f}ms")
+            if baseline.latency_p95_ms:
+                lines.append(f"  Latency p95:    {baseline.latency_p95_ms:.1f}ms")
             lines.append(f"  Latency p99:    {baseline.latency_p99_ms:.1f}ms")
             lines.append(f"  Latency stddev: {baseline.latency_stddev_ms:.1f}ms")
         if baseline.error_rate_pct is not None:
             lines.append(f"  Error rate:     {baseline.error_rate_pct:.2f}%")
-        lines.append(f"  Sample count:   {baseline.sample_count}")
+        if baseline.request_rate_per_min is not None:
+            lines.append(f"  Request rate:   {baseline.request_rate_per_min:.1f}/min")
+        w_sig, c_sig = baseline.sigma_multipliers()
+        lines.append(f"  Sample count:   {baseline.sample_count}  (σ bands: {w_sig}σ/{c_sig}σ)")
         if not baseline.is_reliable():
             lines.append("  ⚠ Baseline has insufficient samples — using fixed thresholds")
     else:

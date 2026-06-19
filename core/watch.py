@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .discovery import discover_services
-from .baseline_learner import learn_baseline, load_baseline
+from .baseline_learner import learn_baseline, load_baseline, find_similar_baseline
 from .detector_generator import generate_detectors
 from .detector_deployer import deploy_detectors, DeployResult
 from .retune import retune_service, baseline_hash, format_retune_summary, signalflow_hash
@@ -155,18 +155,29 @@ class WatchDaemon:
         cfg = self.config
         logger.info("Watch: provisioning new service %s/%s", profile.environment, profile.service)
 
-        # Learn baseline
+        # Learn baseline — cache first, then API, then borrow from similar service
         baseline = None
         baseline_path = cfg.baseline_dir / f"{profile.environment}__{profile.service}.json"
-        baseline = load_baseline(baseline_path) or learn_baseline(
-            realm=cfg.realm,
-            token=cfg.token,
-            service=profile.service,
-            environment=profile.environment,
-            window_hours=cfg.baseline_window_hours,
-            output_dir=cfg.baseline_dir,
-        )
-        if not baseline.is_reliable():
+        baseline = load_baseline(baseline_path)
+        if not baseline:
+            baseline = learn_baseline(
+                realm=cfg.realm,
+                token=cfg.token,
+                service=profile.service,
+                environment=profile.environment,
+                window_hours=cfg.baseline_window_hours,
+                output_dir=cfg.baseline_dir,
+            )
+            if baseline and not baseline.is_reliable():
+                borrowed = find_similar_baseline(
+                    service=profile.service,
+                    environment=profile.environment,
+                    stacks=profile.stacks,
+                    baseline_dir=cfg.baseline_dir,
+                )
+                if borrowed:
+                    baseline = borrowed
+        if baseline and not baseline.is_reliable():
             baseline = None
 
         # Generate detectors
@@ -207,6 +218,8 @@ class WatchDaemon:
         ]
         b_snapshot = {
             "latency_mean_ms": baseline.latency_mean_ms if baseline else None,
+            "latency_p95_ms": baseline.latency_p95_ms if baseline else None,
+            "latency_p99_ms": baseline.latency_p99_ms if baseline else None,
             "latency_stddev_ms": baseline.latency_stddev_ms if baseline else None,
             "error_rate_pct": baseline.error_rate_pct if baseline else None,
             "error_rate_stddev_pct": baseline.error_rate_stddev_pct if baseline else None,

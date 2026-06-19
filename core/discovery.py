@@ -147,6 +147,9 @@ class ServiceProfile:
     # Libraries confirmed via direct span evidence (db.system, messaging.system, etc.)
     # Only these get library-specific detector templates
     direct_clients: set[str] = field(default_factory=set)
+    # Criticality: number of unique upstream callers seen in span samples
+    fan_in_count: int = 0
+    is_critical_path: bool = False  # True when fan_in_count >= 3
 
     def all_detected(self) -> list[str]:
         return self.stacks + self.frameworks + self.libraries
@@ -454,6 +457,22 @@ def _build_profile(
     db_libs = {"kafka", "redis", "postgresql", "mysql", "mongodb", "rabbitmq",
                "elasticsearch", "cassandra", "dynamodb", "mssql"}
     profile.direct_clients = {k for k in span_detected if k in db_libs}
+
+    # Criticality: count unique upstream callers from server-side spans.
+    # A span.kind=server span with a peer.service tag means another service called us.
+    upstream_callers: set[str] = set()
+    for span in spans:
+        tags = span.get("tags") or []
+        is_server = any(
+            t.get("key") == "span.kind" and t.get("value") in ("server", "consumer")
+            for t in tags
+        )
+        if is_server:
+            peer = next((t.get("value") for t in tags if t.get("key") == "peer.service"), None)
+            if peer and peer != service:
+                upstream_callers.add(peer)
+    profile.fan_in_count = len(upstream_callers)
+    profile.is_critical_path = profile.fan_in_count >= 3
 
     return profile
 

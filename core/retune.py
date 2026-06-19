@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -36,6 +37,7 @@ def baseline_hash(baseline: ServiceBaseline) -> str:
     """Stable hash of the baseline values used to decide if retune is needed."""
     parts = [
         str(round(baseline.latency_mean_ms or 0, 1)),
+        str(round(baseline.latency_p99_ms or 0, 1)),
         str(round(baseline.latency_stddev_ms or 0, 1)),
         str(round(baseline.error_rate_pct or 0, 3)),
         str(baseline.sample_count),
@@ -118,7 +120,22 @@ def _rebuild_signalflow(old_signalflow: str, old_baseline: dict, new_baseline: S
     changed = False
 
     # ── Latency thresholds ────────────────────────────────────────────────────
-    if old_lat_mean and new_baseline.latency_mean_ms:
+    # Prefer p99/1.5×p99 if stored in snapshot (matches apm.py generation).
+    # Fall back to mean+Nσ for detectors provisioned before p99 tracking.
+    old_lat_p99 = old_baseline.get("latency_p99_ms")
+    if old_lat_p99 and new_baseline.latency_p99_ms:
+        p99_drift = _drift_pct(old_lat_p99, new_baseline.latency_p99_ms)
+        if p99_drift >= RETUNE_DRIFT_THRESHOLD:
+            old_warn = round(old_lat_p99, 1)
+            old_anomaly = round(old_lat_p99 * 1.5, 1)
+            new_warn = round(new_baseline.latency_p99_ms, 1)
+            new_anomaly = round(new_baseline.latency_p99_ms * 1.5, 1)
+            for old_t, new_t in [(old_warn, new_warn), (old_anomaly, new_anomaly)]:
+                new_text = _replace_threshold(text, old_t, new_t)
+                if new_text != text:
+                    text = new_text
+                    changed = True
+    elif old_lat_mean and new_baseline.latency_mean_ms:
         mean_drift = _drift_pct(old_lat_mean, new_baseline.latency_mean_ms)
         std_drift = _drift_pct(old_lat_std, new_baseline.latency_stddev_ms or 0)
 
@@ -272,6 +289,8 @@ def retune_service(
     if not dry_run:
         new_snapshot = {
             "latency_mean_ms": new_baseline.latency_mean_ms,
+            "latency_p95_ms": new_baseline.latency_p95_ms,
+            "latency_p99_ms": new_baseline.latency_p99_ms,
             "latency_stddev_ms": new_baseline.latency_stddev_ms,
             "error_rate_pct": new_baseline.error_rate_pct,
             "error_rate_stddev_pct": new_baseline.error_rate_stddev_pct,
@@ -280,6 +299,61 @@ def retune_service(
         state.record_retune(service, environment, new_hash, updated_records, baseline_snapshot=new_snapshot)
 
     return results
+
+
+def audit_detector_effectiveness(
+    realm: str,
+    token: str,
+    state: ProvisionerState,
+    environment: str | None = None,
+    lookback_hours: int = 168,
+) -> list[dict]:
+    """
+    Query each provisioned detector's recent event history.
+    Returns a list of dicts with keys:
+      service, environment, detector_name, detector_id, events_per_day, verdict
+    where verdict is 'noisy' (>10/day), 'silent' (0 events in window), or 'ok'.
+    """
+    api_base = f"https://api.{realm}.signalfx.com"
+    report = []
+    cutoff_ms = int((time.time() - lookback_hours * 3600) * 1000)
+
+    for svc_state in state.all_services():
+        if svc_state.archived:
+            continue
+        if environment and svc_state.environment != environment:
+            continue
+        for record in svc_state.detector_records:
+            if record.detector_id in ("dry-run", "dry-run-create", "dry-run-update"):
+                continue
+            try:
+                url = f"{api_base}/v2/detector/{record.detector_id}/events?offset=0&limit=1000"
+                req = urllib.request.Request(
+                    url, headers={"X-SF-Token": token, "Accept": "application/json"}
+                )
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    data = json.loads(resp.read().decode())
+                events = data.get("results") or []
+                recent = [e for e in events if (e.get("timestamp") or 0) >= cutoff_ms]
+                epd = round(len(recent) / (lookback_hours / 24), 1)
+                if epd > 10:
+                    verdict = "noisy"
+                elif len(recent) == 0:
+                    verdict = "silent"
+                else:
+                    verdict = "ok"
+                report.append({
+                    "service": svc_state.service,
+                    "environment": svc_state.environment,
+                    "detector_name": record.detector_name,
+                    "detector_id": record.detector_id,
+                    "events_per_day": epd,
+                    "verdict": verdict,
+                })
+            except Exception as e:
+                logger.warning("Audit: failed to fetch events for %s (%s): %s",
+                               record.detector_name, record.detector_id, e)
+    return report
 
 
 def format_retune_summary(results: list[RetuneResult], dry_run: bool) -> str:
