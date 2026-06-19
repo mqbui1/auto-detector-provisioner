@@ -99,6 +99,7 @@ class WatchDaemon:
             realm=cfg.realm,
             token=cfg.token,
             environment=cfg.environment,
+            window_hours=cfg.baseline_window_hours,
         )
 
         new_services = [
@@ -167,6 +168,7 @@ class WatchDaemon:
                 environment=profile.environment,
                 window_hours=cfg.baseline_window_hours,
                 output_dir=cfg.baseline_dir,
+                stacks=profile.stacks,
             )
             if baseline and not baseline.is_reliable():
                 borrowed = find_similar_baseline(
@@ -258,6 +260,7 @@ class WatchDaemon:
                 environment=profile.environment,
                 window_hours=cfg.baseline_window_hours,
                 output_dir=cfg.baseline_dir,
+                stacks=profile.stacks,
             )
 
         if not baseline.is_reliable():

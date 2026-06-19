@@ -5,6 +5,7 @@ No new detectors created — only SignalFlow text and rule thresholds are update
 """
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import logging
@@ -12,7 +13,7 @@ import re
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .baseline_learner import ServiceBaseline
 from .state import ProvisionerState, DetectorRecord
@@ -31,6 +32,7 @@ class RetuneResult:
     detector_name: str
     action: str          # "updated" | "skipped" | "failed"
     reason: str = ""
+    diff: str = field(default="", compare=False)
 
 
 def baseline_hash(baseline: ServiceBaseline) -> str:
@@ -97,6 +99,12 @@ def _replace_threshold(text: str, old_val: float, new_val: float) -> str:
     for old_s in candidates:
         if old_s == new_s:
             continue
+        # Skip if numerically equivalent — avoids replacing "5" with "5.0" in e.g. lasting="5m"
+        try:
+            if float(old_s) == float(new_s):
+                continue
+        except ValueError:
+            pass
         pattern = r'(?<![0-9\.])' + re.escape(old_s) + r'(?![0-9\.])'
         new_text = re.sub(pattern, new_s, text)
         if new_text != text:
@@ -104,41 +112,30 @@ def _replace_threshold(text: str, old_val: float, new_val: float) -> str:
     return text
 
 
-def _rebuild_signalflow(old_signalflow: str, old_baseline: dict, new_baseline: ServiceBaseline) -> str | None:
+def _get_threshold_replacements(
+    old_baseline: dict, new_baseline: ServiceBaseline
+) -> list[tuple[float, float]]:
     """
-    Replace threshold values in existing SignalFlow text using the new baseline.
-    Handles latency (mean ± N*stddev) and error rate thresholds.
-    Returns updated SignalFlow or None if no change needed.
+    Compute (old_value, new_value) threshold pairs for all signals that have
+    drifted beyond RETUNE_DRIFT_THRESHOLD. Used to patch both SignalFlow text
+    and detector description in one pass.
     """
-    text = old_signalflow
+    pairs: list[tuple[float, float]] = []
 
     old_lat_mean = old_baseline.get("latency_mean_ms") or 0
     old_lat_std = old_baseline.get("latency_stddev_ms") or 0
+    old_lat_p99 = old_baseline.get("latency_p99_ms")
     old_err_mean = old_baseline.get("error_rate_pct")
-    old_err_std = old_baseline.get("error_rate_stddev_pct") or 0
-
-    changed = False
 
     # ── Latency thresholds ────────────────────────────────────────────────────
-    # Prefer p99/1.5×p99 if stored in snapshot (matches apm.py generation).
-    # Fall back to mean+Nσ for detectors provisioned before p99 tracking.
-    old_lat_p99 = old_baseline.get("latency_p99_ms")
+    # Prefer p99/1.5×p99 if stored in snapshot; fall back to mean+Nσ for legacy.
     if old_lat_p99 and new_baseline.latency_p99_ms:
-        p99_drift = _drift_pct(old_lat_p99, new_baseline.latency_p99_ms)
-        if p99_drift >= RETUNE_DRIFT_THRESHOLD:
-            old_warn = round(old_lat_p99, 1)
-            old_anomaly = round(old_lat_p99 * 1.5, 1)
-            new_warn = round(new_baseline.latency_p99_ms, 1)
-            new_anomaly = round(new_baseline.latency_p99_ms * 1.5, 1)
-            for old_t, new_t in [(old_warn, new_warn), (old_anomaly, new_anomaly)]:
-                new_text = _replace_threshold(text, old_t, new_t)
-                if new_text != text:
-                    text = new_text
-                    changed = True
+        if _drift_pct(old_lat_p99, new_baseline.latency_p99_ms) >= RETUNE_DRIFT_THRESHOLD:
+            pairs.append((round(old_lat_p99, 1), round(new_baseline.latency_p99_ms, 1)))
+            pairs.append((round(old_lat_p99 * 1.5, 1), round(new_baseline.latency_p99_ms * 1.5, 1)))
     elif old_lat_mean and new_baseline.latency_mean_ms:
         mean_drift = _drift_pct(old_lat_mean, new_baseline.latency_mean_ms)
         std_drift = _drift_pct(old_lat_std, new_baseline.latency_stddev_ms or 0)
-
         if mean_drift >= RETUNE_DRIFT_THRESHOLD or std_drift >= RETUNE_DRIFT_THRESHOLD:
             for n_sigma in [2.0, 3.0]:
                 old_t = round(old_lat_mean + n_sigma * old_lat_std, 1)
@@ -146,27 +143,23 @@ def _rebuild_signalflow(old_signalflow: str, old_baseline: dict, new_baseline: S
                     (new_baseline.latency_mean_ms or 0) + n_sigma * (new_baseline.latency_stddev_ms or 0),
                     1,
                 )
-                new_text = _replace_threshold(text, old_t, new_t)
-                if new_text != text:
-                    text = new_text
-                    changed = True
+                pairs.append((old_t, new_t))
 
     # ── Error rate thresholds ─────────────────────────────────────────────────
     # apm.py generates: warn=max(mean*2, 1.0), anomaly=max(mean*4, 5.0)
     if old_err_mean is not None and new_baseline.error_rate_pct is not None:
-        err_drift = _drift_pct(old_err_mean, new_baseline.error_rate_pct)
-        if err_drift >= RETUNE_DRIFT_THRESHOLD:
-            old_warn = round(max(old_err_mean * 2, 1.0), 2)
-            old_anomaly = round(max(old_err_mean * 4, 5.0), 2)
-            new_warn = round(max(new_baseline.error_rate_pct * 2, 1.0), 2)
-            new_anomaly = round(max(new_baseline.error_rate_pct * 4, 5.0), 2)
-            for old_t, new_t in [(old_warn, new_warn), (old_anomaly, new_anomaly)]:
-                new_text = _replace_threshold(text, old_t, new_t)
-                if new_text != text:
-                    text = new_text
-                    changed = True
+        if _drift_pct(old_err_mean, new_baseline.error_rate_pct) >= RETUNE_DRIFT_THRESHOLD:
+            pairs.append((round(max(old_err_mean * 2, 1.0), 2), round(max(new_baseline.error_rate_pct * 2, 1.0), 2)))
+            pairs.append((round(max(old_err_mean * 4, 5.0), 2), round(max(new_baseline.error_rate_pct * 4, 5.0), 2)))
 
-    return text if changed else None
+    return pairs
+
+
+def _apply_threshold_replacements(text: str, pairs: list[tuple[float, float]]) -> str:
+    """Apply a list of (old_value, new_value) threshold substitutions to text."""
+    for old_t, new_t in pairs:
+        text = _replace_threshold(text, old_t, new_t)
+    return text
 
 
 def retune_service(
@@ -178,6 +171,7 @@ def retune_service(
     state: ProvisionerState,
     dry_run: bool = True,
     retune_interval_days: float = 7.0,
+    show_diff: bool = False,
 ) -> list[RetuneResult]:
     """
     Compare current baseline to the one recorded at provision time.
@@ -222,14 +216,10 @@ def retune_service(
             # Fetch current detector from API
             current = _api_get(api_base, token, record.detector_id)
             current_signalflow = current.get("programText", "")
+            current_description = current.get("description", "")
 
-            new_signalflow = _rebuild_signalflow(
-                current_signalflow,
-                old_baseline_snapshot,
-                new_baseline,
-            )
-
-            if not new_signalflow:
+            pairs = _get_threshold_replacements(old_baseline_snapshot, new_baseline)
+            if not pairs:
                 updated_records.append(record)
                 results.append(RetuneResult(
                     service=service, environment=environment,
@@ -240,6 +230,30 @@ def retune_service(
                 ))
                 continue
 
+            new_signalflow = _apply_threshold_replacements(current_signalflow, pairs)
+            new_description = _apply_threshold_replacements(current_description, pairs)
+            if new_signalflow == current_signalflow:
+                updated_records.append(record)
+                results.append(RetuneResult(
+                    service=service, environment=environment,
+                    detector_id=record.detector_id,
+                    detector_name=record.detector_name,
+                    action="skipped",
+                    reason=f"drift below {RETUNE_DRIFT_THRESHOLD*100:.0f}% threshold",
+                ))
+                continue
+
+            sf_diff = ""
+            if show_diff:
+                old_lines = current_signalflow.splitlines(keepends=True)
+                new_lines = new_signalflow.splitlines(keepends=True)
+                sf_diff = "".join(difflib.unified_diff(
+                    old_lines, new_lines,
+                    fromfile=f"{record.detector_name} (current)",
+                    tofile=f"{record.detector_name} (retuned)",
+                    lineterm="",
+                ))
+
             if dry_run:
                 logger.info("[DRY RUN] Would retune detector: %s", record.detector_name)
                 updated_records.append(record)
@@ -249,12 +263,14 @@ def retune_service(
                     detector_name=record.detector_name,
                     action="dry-run",
                     reason="would update SignalFlow thresholds",
+                    diff=sf_diff,
                 ))
                 continue
 
-            # Patch the detector
+            # Patch the detector — update SignalFlow and description together
             patch_body = dict(current)
             patch_body["programText"] = new_signalflow
+            patch_body["description"] = new_description
             _api_patch(api_base, token, record.detector_id, patch_body)
 
             new_record = DetectorRecord(
@@ -271,7 +287,8 @@ def retune_service(
                 detector_id=record.detector_id,
                 detector_name=record.detector_name,
                 action="updated",
-                reason="SignalFlow thresholds updated to match new baseline",
+                reason="SignalFlow thresholds and description updated to match new baseline",
+                diff=sf_diff,
             ))
             logger.info("Retune: updated detector %s (%s)", record.detector_name, record.detector_id)
 
@@ -372,6 +389,9 @@ def format_retune_summary(results: list[RetuneResult], dry_run: bool) -> str:
         lines.append(f"\n{label} ({len(actioned)}):")
         for r in actioned:
             lines.append(f"  ✓ {r.detector_name}: {r.reason}")
+            if r.diff:
+                for diff_line in r.diff.splitlines():
+                    lines.append(f"    {diff_line}")
 
     if failed:
         lines.append(f"\nFAILED ({len(failed)}):")

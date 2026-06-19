@@ -20,6 +20,7 @@ from .baseline_learner import ServiceBaseline
 from .metric_filter import (
     extract_metrics_from_signalflow,
     probe_existing_metrics,
+    probe_http_status_codes_exist,
     filter_detectors_by_metric_existence,
 )
 
@@ -114,6 +115,21 @@ def generate_detectors(
             dropped = before - len(detectors)
             if dropped:
                 logger.info("Generator: metric probe dropped %d detectors with no data for %s/%s",
+                            dropped, environment, service)
+
+        # HTTP status code gate — gRPC-only services don't emit http.status_code so
+        # HTTP 4xx/5xx detectors would never fire; drop them to avoid ghost detectors.
+        if not probe_http_status_codes_exist(api_base, token, service, environment):
+            before = len(detectors)
+            detectors = [
+                d for d in detectors
+                if '"http.status_code"' not in d.signalflow
+                and '"http.response.status_code"' not in d.signalflow
+            ]
+            dropped = before - len(detectors)
+            if dropped:
+                logger.info("Generator: HTTP status code gate dropped %d detectors for %s/%s "
+                            "(gRPC-only or no HTTP status dimensions)",
                             dropped, environment, service)
 
     logger.info("Generator: %d detectors generated for %s/%s", len(detectors), environment, service)

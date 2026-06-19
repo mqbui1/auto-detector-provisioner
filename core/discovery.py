@@ -189,10 +189,10 @@ def _gql_post(app_base: str, token: str, op: str, body: dict) -> dict:
         raise RuntimeError(f"HTTP {e.code}: {(e.read() or b'')[:300].decode()}")
 
 
-def _list_apm_services(app_base: str, token: str, environment: str | None = None) -> list[dict]:
-    """List services seen in APM within the last 24h."""
+def _list_apm_services(app_base: str, token: str, environment: str | None = None, window_hours: int = 24) -> list[dict]:
+    """List services seen in APM within the given lookback window."""
     now_ms = int(time.time() * 1000)
-    start_ms = now_ms - 24 * 3600 * 1000
+    start_ms = now_ms - window_hours * 3600 * 1000
 
     tag_filters = []
     if environment:
@@ -238,10 +238,10 @@ def _sample_mts_for_service(api_base: str, token: str, service: str, environment
         return []
 
 
-def _sample_spans_for_service(app_base: str, token: str, service: str, environment: str | None) -> list[dict]:
+def _sample_spans_for_service(app_base: str, token: str, service: str, environment: str | None, window_hours: int = 24) -> list[dict]:
     """Sample recent spans for a service to detect span attribute fingerprints."""
     now_ms = int(time.time() * 1000)
-    start_ms = now_ms - 3 * 3600 * 1000
+    start_ms = now_ms - window_hours * 3600 * 1000
 
     # Use sf_service (Splunk APM dimension) not service.name (OTel attribute)
     tag_filters = [{"tag": "sf_service", "operation": "IN", "values": [service]}]
@@ -482,6 +482,7 @@ def discover_services(
     token: str,
     environment: str | None = None,
     known_services: set[str] | None = None,
+    window_hours: int = 168,
 ) -> list[ServiceProfile]:
     """
     Discover services in the given environment, detect their tech stack,
@@ -491,8 +492,8 @@ def discover_services(
     api_base = f"https://api.{realm}.signalfx.com"
     app_base = f"https://app.{realm}.signalfx.com"
 
-    logger.info("Discovery: listing APM services (env=%s)", environment)
-    apm_services = _list_apm_services(app_base, token, environment)
+    logger.info("Discovery: listing APM services (env=%s, window=%dh)", environment, window_hours)
+    apm_services = _list_apm_services(app_base, token, environment, window_hours=window_hours)
 
     # Always supplement APM discovery with MTS catalog so we catch services
     # that emit OTel metrics (service.name dimension) but no APM spans —
@@ -550,7 +551,9 @@ def discover_services(
         logger.info("Discovery: profiling %s (env=%s)", svc_name, svc_env)
 
         mts_list = _sample_mts_for_service(api_base, token, svc_name, svc_env)
-        spans = _sample_spans_for_service(app_base, token, svc_name, svc_env)
+        # Cap span sampling at 24h — recent spans are representative for fingerprinting
+        span_window = min(window_hours, 24)
+        spans = _sample_spans_for_service(app_base, token, svc_name, svc_env, window_hours=span_window)
 
         profile = _build_profile(svc_name, svc_env, mts_list, spans)
         profiles.append(profile)

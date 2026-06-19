@@ -56,6 +56,8 @@ class ServiceBaseline:
     error_rate_stddev_pct: float | None = None
     request_rate_per_min: float | None = None
     sample_count: int = 0
+    # Tech stacks detected at provision time — used for accurate baseline borrowing
+    stacks: list[str] = field(default_factory=list)
 
     def is_reliable(self, min_samples: int = 30) -> bool:
         return self.sample_count >= min_samples
@@ -238,6 +240,7 @@ def learn_baseline(
     window_hours: int = 24,
     metrics_to_learn: list[str] | None = None,
     output_dir: Path | None = None,
+    stacks: list[str] | None = None,
 ) -> ServiceBaseline:
     """
     Learn baseline for a service by observing metrics and APM data
@@ -250,6 +253,7 @@ def learn_baseline(
         service=service,
         environment=environment,
         window_hours=window_hours,
+        stacks=stacks or [],
     )
 
     # Learn APM baseline
@@ -312,6 +316,7 @@ def _save_baseline(baseline: ServiceBaseline, path: Path) -> None:
         "learned_at": baseline.learned_at,
         "window_hours": baseline.window_hours,
         "sample_count": baseline.sample_count,
+        "stacks": baseline.stacks,
         "latency_mean_ms": baseline.latency_mean_ms,
         "latency_p95_ms": baseline.latency_p95_ms,
         "latency_p99_ms": baseline.latency_p99_ms,
@@ -359,6 +364,7 @@ def load_baseline(path: Path) -> ServiceBaseline | None:
         learned_at=learned_at,
         window_hours=data.get("window_hours", 24),
         sample_count=sample_count,
+        stacks=data.get("stacks") or [],
         latency_mean_ms=data.get("latency_mean_ms"),
         latency_p95_ms=data.get("latency_p95_ms"),
         latency_p99_ms=data.get("latency_p99_ms"),
@@ -403,11 +409,13 @@ def find_similar_baseline(
         candidate = load_baseline(path)
         if not candidate or not candidate.is_reliable():
             continue
-        candidate_stacks = set()
-        # Re-derive stacks from the stored baseline's service name isn't possible directly.
-        # Instead store stacks in the baseline file — for now, match on environment only.
-        # (Full stack matching would require persisting profile.stacks in the baseline file.)
         if file_env != environment:
+            continue
+        # Prefer candidates with stack overlap; skip if stacks are known and incompatible
+        candidate_stacks = set(candidate.stacks)
+        if target_stacks and candidate_stacks and not target_stacks.intersection(candidate_stacks):
+            logger.debug("Baseline: skipping %s/%s — stacks %s don't match target %s",
+                         file_env, file_svc, candidate_stacks, target_stacks)
             continue
         # Widen confidence: halve sample count so σ multipliers use wider bands
         borrowed = ServiceBaseline(

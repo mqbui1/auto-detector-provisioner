@@ -41,6 +41,59 @@ import sys
 import time
 from pathlib import Path
 
+
+def _load_config_file(path: Path) -> dict[str, object]:
+    """
+    Parse a simple YAML config file (flat key-value pairs + lists).
+    Supports:
+      key: value
+      key:           # starts a list
+        - item1
+        - item2
+    Keys with hyphens are normalised to underscores to match argparse dest names.
+    """
+    result: dict[str, object] = {}
+    current_list_key: str | None = None
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            if not stripped:
+                current_list_key = None
+            continue
+        if stripped.startswith("- ") and current_list_key:
+            item = stripped[2:].strip()
+            if isinstance(result.get(current_list_key), list):
+                result[current_list_key].append(item)  # type: ignore[union-attr]
+            continue
+        if ":" in stripped:
+            key, _, raw = stripped.partition(":")
+            key = key.strip().replace("-", "_")
+            val = raw.strip()
+            if not val:
+                current_list_key = key
+                result[key] = []
+            else:
+                current_list_key = None
+                # Strip inline comments (space + #)
+                comment_idx = val.find(" #")
+                if comment_idx >= 0:
+                    val = val[:comment_idx].strip()
+                if not val:
+                    continue
+                if val.lower() in ("true", "yes"):
+                    result[key] = True
+                elif val.lower() in ("false", "no"):
+                    result[key] = False
+                else:
+                    try:
+                        result[key] = int(val)
+                    except ValueError:
+                        try:
+                            result[key] = float(val)
+                        except ValueError:
+                            result[key] = val
+    return result
+
 from core.discovery import discover_services
 from core.baseline_learner import learn_baseline, load_baseline, find_similar_baseline
 from core.detector_generator import generate_detectors, format_dry_run_report
@@ -55,11 +108,19 @@ from core.watch import WatchDaemon, WatchConfig
 
 
 def parse_args() -> argparse.Namespace:
+    # Two-pass: pre-parse for --config so we can set defaults before full parse
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", type=Path, default=None)
+    pre_args, _ = pre.parse_known_args()
+
     parser = argparse.ArgumentParser(
         description="Auto-provision Splunk Observability detectors based on live telemetry",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
+
+    parser.add_argument("--config", type=Path, metavar="FILE",
+                        help="YAML config file — CLI flags override values in the file")
 
     conn = parser.add_argument_group("connection")
     conn.add_argument("--realm", required=True, help="Splunk Observability realm (e.g. us1, us0, eu0)")
@@ -118,6 +179,8 @@ def parse_args() -> argparse.Namespace:
                            help="Show all provisioned services, their detectors, and current state")
     lifecycle.add_argument("--audit", action="store_true",
                            help="Audit detector effectiveness — show alert event rates and noisy/silent detectors")
+    lifecycle.add_argument("--diff", action="store_true",
+                           help="Show SignalFlow before/after diff when retuning (implies --retune)")
     lifecycle.add_argument("--stale-days", type=float, default=7.0, metavar="N",
                            help="Days of inactivity before a service is considered stale (default: 7)")
 
@@ -132,6 +195,12 @@ def parse_args() -> argparse.Namespace:
                        help="Automatically archive stale services in watch mode")
 
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
+
+    if pre_args.config:
+        if not pre_args.config.exists():
+            parser.error(f"Config file not found: {pre_args.config}")
+        config_vals = _load_config_file(pre_args.config)
+        parser.set_defaults(**config_vals)
 
     return parser.parse_args()
 
@@ -304,6 +373,10 @@ def main() -> int:
 
     # ── Standard provision / retune flow ─────────────────────────────────────
 
+    # --diff implies --retune
+    if args.diff:
+        args.retune = True
+
     mode = "DRY RUN" if dry_run else "AUTO-DEPLOY"
     if args.retune:
         mode = f"RETUNE ({'DRY RUN' if dry_run else 'LIVE'})"
@@ -319,6 +392,7 @@ def main() -> int:
         realm=args.realm,
         token=args.token,
         environment=args.environment,
+        window_hours=args.baseline_window_hours,
     )
 
     if args.service:
@@ -362,13 +436,24 @@ def main() -> int:
                     service=profile.service, environment=profile.environment,
                     window_hours=args.baseline_window_hours,
                     output_dir=args.baseline_dir,
+                    stacks=profile.stacks,
                 )
+                if baseline and not baseline.is_reliable():
+                    borrowed = find_similar_baseline(
+                        service=profile.service,
+                        environment=profile.environment,
+                        stacks=profile.stacks,
+                        baseline_dir=args.baseline_dir,
+                    )
+                    if borrowed:
+                        baseline = borrowed
 
             results = retune_service(
                 realm=args.realm, token=args.token,
                 service=profile.service, environment=profile.environment,
                 new_baseline=baseline, state=state, dry_run=dry_run,
                 retune_interval_days=args.retune_interval_days,
+                show_diff=args.diff,
             )
             print(format_retune_summary(results, dry_run))
             total_actioned += sum(1 for r in results if r.action == "updated")
@@ -393,6 +478,7 @@ def main() -> int:
                 service=profile.service, environment=profile.environment,
                 window_hours=args.baseline_window_hours,
                 output_dir=args.baseline_dir,
+                stacks=profile.stacks,
             )
             # If service has no telemetry history, borrow from a similar same-env service
             if baseline and not baseline.is_reliable():

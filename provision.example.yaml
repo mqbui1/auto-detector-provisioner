@@ -1,0 +1,30 @@
+# Auto-Detector Provisioner — example config file
+# Copy to provision.yaml and fill in your values.
+# Usage: python3 provision.py --config provision.yaml [--auto-deploy] [--retune] ...
+# CLI flags always override values in this file.
+
+# ── Connection ────────────────────────────────────────────────────────────────
+realm: us1
+# token: set via SPLUNK_ACCESS_TOKEN env var (don't commit tokens to config files)
+
+# ── Scope ────────────────────────────────────────────────────────────────────
+environment: production
+# service: my-specific-service   # omit to process all services
+
+# ── Baseline ─────────────────────────────────────────────────────────────────
+baseline_window_hours: 168        # 7 days — captures weekly traffic patterns
+baseline_dir: data/baselines
+
+# ── Deployment ───────────────────────────────────────────────────────────────
+# auto_deploy: false              # set to true to deploy (default: dry run)
+state_file: data/provisioned_state.json
+# notify:                         # Splunk integration IDs to alert
+#   - abc123def456
+#   - ghi789jkl012
+
+# ── Lifecycle ────────────────────────────────────────────────────────────────
+retune_interval_days: 7.0
+stale_days: 7.0
+
+# ── Watch mode ───────────────────────────────────────────────────────────────
+poll_interval: 60                 # minutes between discovery cycles
