@@ -58,6 +58,12 @@ class ServiceBaseline:
     sample_count: int = 0
     # Tech stacks detected at provision time — used for accurate baseline borrowing
     stacks: list[str] = field(default_factory=list)
+    # GenAI / agentic baselines — populated when gen_ai.* telemetry is detected
+    genai_input_token_p95: float | None = None        # p95 input tokens/request (context saturation)
+    genai_token_rate_per_min: float | None = None     # mean total tokens/min (spike baseline)
+    genai_operation_duration_p99_s: float | None = None  # p99 LLM call duration in seconds
+    genai_truncation_rate_pct: float | None = None    # % responses with finish_reason=length
+    genai_tool_failure_rate_pct: float | None = None  # % tool calls that fail
 
     def is_reliable(self, min_samples: int = 30) -> bool:
         return self.sample_count >= min_samples
@@ -218,6 +224,73 @@ def _learn_apm_baseline(api_base: str, token: str, service: str, environment: st
     }
 
 
+def _learn_genai_baseline(api_base: str, token: str, service: str, environment: str, window_hours: int) -> dict:
+    """Learn GenAI-specific baselines from gen_ai.* OTel metrics.
+
+    Returns a dict with stats for each signal, or empty dict if no gen_ai metrics exist.
+    All queries silently return nothing if the service doesn't emit gen_ai metrics.
+    """
+    now_ms = int(time.time() * 1000)
+    start_ms = now_ms - window_hours * 3600 * 1000
+    env_filter = f'filter("sf_environment", "{environment}") and ' if environment else ""
+    f = f"{env_filter}filter(\"sf_service\", \"{service}\")"
+    result: dict = {}
+
+    # Input token p95 per 5m window — baseline for context window saturation
+    vals = _execute_signalflow(
+        api_base, token,
+        f'data("gen_ai.client.token.usage", filter={f} and filter("gen_ai.token.type", "input")).percentile(pct=95, over="5m").publish()',
+        start_ms, now_ms,
+    )
+    if vals and any(v > 0 for v in vals):
+        result["input_token_p95"] = _compute_stats(vals)
+
+    # Total token rate per minute — baseline for spike detection
+    vals = _execute_signalflow(
+        api_base, token,
+        f'data("gen_ai.client.token.usage", filter={f}).sum(over="1m").publish()',
+        start_ms, now_ms,
+    )
+    if vals and any(v > 0 for v in vals):
+        result["token_rate"] = _compute_stats(vals)
+
+    # LLM operation duration p99 in seconds — direct gen_ai metric, more precise than APM conversion
+    vals = _execute_signalflow(
+        api_base, token,
+        f'data("gen_ai.client.operation.duration", filter={f}).percentile(pct=99, over="5m").publish()',
+        start_ms, now_ms,
+    )
+    if vals and any(v > 0 for v in vals):
+        result["operation_duration_s"] = _compute_stats(vals)
+
+    # Truncation rate (finish_reason=length / total) — percentage per minute
+    vals = _execute_signalflow(
+        api_base, token,
+        (f'A = data("gen_ai.client.operation.duration.count", filter={f} and filter("gen_ai.response.finish_reason", "length")).sum()\n'
+         f'B = data("gen_ai.client.operation.duration.count", filter={f}).sum()\n'
+         f'(A / B * 100).publish()'),
+        start_ms, now_ms,
+    )
+    if vals:
+        result["truncation_rate"] = _compute_stats([v for v in vals if 0 <= v <= 100])
+
+    # Tool failure rate (execute_tool errors / execute_tool total) — percentage per minute
+    vals = _execute_signalflow(
+        api_base, token,
+        (f'A = data("gen_ai.client.operation.duration.count", filter={f} and filter("gen_ai.operation.name", "execute_tool") and filter("error.type", "*")).sum()\n'
+         f'B = data("gen_ai.client.operation.duration.count", filter={f} and filter("gen_ai.operation.name", "execute_tool")).sum()\n'
+         f'(A / B * 100).publish()'),
+        start_ms, now_ms,
+    )
+    if vals:
+        result["tool_failure_rate"] = _compute_stats([v for v in vals if 0 <= v <= 100])
+
+    if result:
+        keys = list(result.keys())
+        logger.info("Baseline: GenAI signals learned for %s/%s: %s", environment, service, keys)
+    return result
+
+
 def _learn_metric_baseline(api_base: str, token: str, metric: str, service: str, environment: str, window_hours: int) -> list[float]:
     """Learn baseline for a specific metric via SignalFlow."""
     now_ms = int(time.time() * 1000)
@@ -280,6 +353,22 @@ def learn_baseline(
     except Exception as e:
         logger.warning("Baseline: APM learning failed: %s", e)
 
+    # Learn GenAI-specific baselines (silently skipped if no gen_ai metrics exist)
+    try:
+        genai = _learn_genai_baseline(api_base, token, service, environment, window_hours)
+        if genai.get("input_token_p95"):
+            baseline.genai_input_token_p95 = genai["input_token_p95"]["p95"]
+        if genai.get("token_rate"):
+            baseline.genai_token_rate_per_min = genai["token_rate"]["mean"]
+        if genai.get("operation_duration_s"):
+            baseline.genai_operation_duration_p99_s = genai["operation_duration_s"]["p99"]
+        if genai.get("truncation_rate") and genai["truncation_rate"]["count"] >= 10:
+            baseline.genai_truncation_rate_pct = genai["truncation_rate"]["mean"]
+        if genai.get("tool_failure_rate") and genai["tool_failure_rate"]["count"] >= 10:
+            baseline.genai_tool_failure_rate_pct = genai["tool_failure_rate"]["mean"]
+    except Exception as e:
+        logger.warning("Baseline: GenAI learning failed: %s", e)
+
     # Learn specific metrics if provided
     for metric in (metrics_to_learn or []):
         try:
@@ -332,6 +421,11 @@ def _save_baseline(baseline: ServiceBaseline, path: Path) -> None:
             }
             for k, v in baseline.metrics.items()
         },
+        "genai_input_token_p95": baseline.genai_input_token_p95,
+        "genai_token_rate_per_min": baseline.genai_token_rate_per_min,
+        "genai_operation_duration_p99_s": baseline.genai_operation_duration_p99_s,
+        "genai_truncation_rate_pct": baseline.genai_truncation_rate_pct,
+        "genai_tool_failure_rate_pct": baseline.genai_tool_failure_rate_pct,
     }
     path.write_text(json.dumps(data, indent=2))
 
@@ -373,6 +467,12 @@ def load_baseline(path: Path) -> ServiceBaseline | None:
         error_rate_stddev_pct=data.get("error_rate_stddev_pct"),
         request_rate_per_min=data.get("request_rate_per_min"),
     )
+    baseline.genai_input_token_p95 = data.get("genai_input_token_p95")
+    baseline.genai_token_rate_per_min = data.get("genai_token_rate_per_min")
+    baseline.genai_operation_duration_p99_s = data.get("genai_operation_duration_p99_s")
+    baseline.genai_truncation_rate_pct = data.get("genai_truncation_rate_pct")
+    baseline.genai_tool_failure_rate_pct = data.get("genai_tool_failure_rate_pct")
+
     for metric, stats in (data.get("metrics") or {}).items():
         baseline.metrics[metric] = MetricBaseline(
             metric=metric,
