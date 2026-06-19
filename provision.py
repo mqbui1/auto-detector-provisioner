@@ -560,6 +560,11 @@ def main() -> int:
                 "error_rate_pct": baseline.error_rate_pct if baseline else None,
                 "error_rate_stddev_pct": baseline.error_rate_stddev_pct if baseline else None,
                 "sample_count": baseline.sample_count if baseline else 0,
+                # GenAI fields — needed by retune to compute drift pairs
+                "genai_operation_duration_p99_s": baseline.genai_operation_duration_p99_s if baseline else None,
+                "genai_input_token_p95": baseline.genai_input_token_p95 if baseline else None,
+                "genai_truncation_rate_pct": baseline.genai_truncation_rate_pct if baseline else None,
+                "genai_tool_failure_rate_pct": baseline.genai_tool_failure_rate_pct if baseline else None,
             }
             state.record_provision(
                 service=profile.service,

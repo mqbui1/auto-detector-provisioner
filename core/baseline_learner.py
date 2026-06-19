@@ -530,6 +530,11 @@ def find_similar_baseline(
             error_rate_pct=candidate.error_rate_pct,
             error_rate_stddev_pct=candidate.error_rate_stddev_pct,
             request_rate_per_min=candidate.request_rate_per_min,
+            genai_input_token_p95=candidate.genai_input_token_p95,
+            genai_token_rate_per_min=candidate.genai_token_rate_per_min,
+            genai_operation_duration_p99_s=candidate.genai_operation_duration_p99_s,
+            genai_truncation_rate_pct=candidate.genai_truncation_rate_pct,
+            genai_tool_failure_rate_pct=candidate.genai_tool_failure_rate_pct,
         )
         logger.info("Baseline: borrowing from %s/%s for new service %s/%s",
                     file_env, file_svc, environment, service)

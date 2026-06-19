@@ -121,6 +121,10 @@ SPAN_FINGERPRINTS: dict[str, dict[str, list[str]]] = {
         "aspnetcore":  ["microsoft.aspnetcore"],
         "nextjs":      ["next.js"],
         "istio":       ["envoy"],
+        "genai":       ["opentelemetry.util.genai", "opentelemetry-instrumentation-openai",
+                        "opentelemetry-instrumentation-anthropic", "opentelemetry-instrumentation-cohere",
+                        "opentelemetry-instrumentation-bedrock", "opentelemetry-instrumentation-vertexai",
+                        "openlit", "traceloop", "langchain_opentelemetry"],
     },
     # telemetry.sdk.language — explicit language tag from OTel SDK
     "sdk_language": {
@@ -203,29 +207,37 @@ def _list_apm_services(app_base: str, token: str, environment: str | None = None
     if environment:
         tag_filters.append({"tag": "sf_environment", "operation": "IN", "values": [environment]})
 
-    # Try newer APM service endpoint first
-    env_filter_str = f'filter("sf_environment", "{environment}")' if environment else "true"
-    body = {
-        "operationName": "GetServices",
-        "variables": {
-            "timeRange": {"gte": start_ms, "lte": now_ms},
-            "environmentFilter": environment or "",
-        },
-        "query": (
-            "query GetServices($environmentFilter: String) {"
-            " serviceNames(environmentName: $environmentFilter) }"
+    # Try APM service endpoint — attempt multiple schema variants since the
+    # `environmentName` argument is not supported in all org configurations.
+    env_val = environment or ""
+    for gql_query, gql_vars in [
+        # Variant A: environmentName arg (newer orgs)
+        (
+            "query GetServices($e: String) { serviceNames(environmentName: $e) }",
+            {"e": env_val},
         ),
-    }
-    try:
-        result = _gql_post(app_base, token, "GetServices", body)
-        names = ((result.get("data") or {}).get("serviceNames") or [])
-        if names:
-            env_val = environment or ""
-            return [{"name": n, "environment": env_val} for n in names if n]
-        return []
-    except RuntimeError as e:
-        logger.warning("APM service list failed: %s", e)
-        return []
+        # Variant B: environment arg (some older configs)
+        (
+            "query GetServices($e: String) { serviceNames(environment: $e) }",
+            {"e": env_val},
+        ),
+    ]:
+        body = {"operationName": "GetServices", "variables": gql_vars, "query": gql_query}
+        try:
+            result = _gql_post(app_base, token, "GetServices", body)
+            names = ((result.get("data") or {}).get("serviceNames") or [])
+            if isinstance(names, list) and names:
+                return [{"name": n, "environment": env_val} for n in names if n]
+            return []
+        except RuntimeError as e:
+            if "Unknown argument" in str(e) or "GRAPHQL_VALIDATION_FAILED" in str(e):
+                logger.debug("APM GraphQL: variant not supported, trying next (%s)", e)
+                continue
+            logger.warning("APM service list failed: %s", e)
+            return []
+    # All variants exhausted — MTS catalog will supply service list
+    logger.debug("APM GraphQL: no supported schema variant found — relying on MTS catalog")
+    return []
 
 
 def _sample_mts_for_service(api_base: str, token: str, service: str, environment: str | None) -> list[dict]:
@@ -362,16 +374,22 @@ def _detect_stack_from_spans(spans: list[dict]) -> dict[str, str]:
             if any(rpc_val.startswith(v) for v in values):
                 detected[tech] = "high"
 
-    # Check gen_ai.system — OTel Gen AI semantic conventions
-    for ai_val in attr_values.get("gen_ai.system", set()):
+    # Check gen_ai.* attributes — OTel Gen AI semantic conventions.
+    # Support standard (gen_ai.system) and non-standard variants (gen_ai.provider.name
+    # from LangChain/Bedrock instrumentation). Also treat gen_ai.operation.name presence
+    # as a definitive signal — any service emitting this is doing LLM/agentic work.
+    for ai_val in (attr_values.get("gen_ai.system", set())
+                   | attr_values.get("gen_ai.provider.name", set())):
         matched = False
         for tech, values in SPAN_FINGERPRINTS["gen_ai_system"].items():
             if any(ai_val.startswith(v) for v in values):
                 detected[tech] = "high"
                 matched = True
         if not matched:
-            # Unknown provider but gen_ai.system is set → still an AI service
             detected["genai"] = "high"
+    # gen_ai.operation.name alone is enough — the service is definitely doing GenAI work
+    if not detected.get("genai") and attr_values.get("gen_ai.operation.name"):
+        detected["genai"] = "high"
 
     # Check http.framework
     for fw_val in (attr_values.get("http.framework", set()) | attr_values.get("http.flavor", set())):

@@ -43,6 +43,11 @@ def baseline_hash(baseline: ServiceBaseline) -> str:
         str(round(baseline.latency_stddev_ms or 0, 1)),
         str(round(baseline.error_rate_pct or 0, 3)),
         str(baseline.sample_count),
+        # GenAI fields — changes here also trigger a retune pass
+        str(round(baseline.genai_operation_duration_p99_s or 0, 2)),
+        str(round(baseline.genai_input_token_p95 or 0, 1)),
+        str(round(baseline.genai_truncation_rate_pct or 0, 2)),
+        str(round(baseline.genai_tool_failure_rate_pct or 0, 2)),
     ]
     return hashlib.md5("|".join(parts).encode()).hexdigest()[:12]
 
@@ -151,6 +156,40 @@ def _get_threshold_replacements(
         if _drift_pct(old_err_mean, new_baseline.error_rate_pct) >= RETUNE_DRIFT_THRESHOLD:
             pairs.append((round(max(old_err_mean * 2, 1.0), 2), round(max(new_baseline.error_rate_pct * 2, 1.0), 2)))
             pairs.append((round(max(old_err_mean * 4, 5.0), 2), round(max(new_baseline.error_rate_pct * 4, 5.0), 2)))
+
+    # ── GenAI: LLM operation duration p99 (seconds) ───────────────────────────
+    old_dur = old_baseline.get("genai_operation_duration_p99_s")
+    if old_dur and new_baseline.genai_operation_duration_p99_s:
+        if _drift_pct(old_dur, new_baseline.genai_operation_duration_p99_s) >= RETUNE_DRIFT_THRESHOLD:
+            new_dur = new_baseline.genai_operation_duration_p99_s
+            pairs.append((round(old_dur, 1), round(new_dur, 1)))
+            pairs.append((round(old_dur * 1.5, 1), round(new_dur * 1.5, 1)))
+
+    # ── GenAI: context window saturation (input token p95) ────────────────────
+    old_ctx = old_baseline.get("genai_input_token_p95")
+    if old_ctx and new_baseline.genai_input_token_p95:
+        if _drift_pct(old_ctx, new_baseline.genai_input_token_p95) >= RETUNE_DRIFT_THRESHOLD:
+            new_ctx = new_baseline.genai_input_token_p95
+            pairs.append((float(int(max(old_ctx * 2.0, 5000))), float(int(max(new_ctx * 2.0, 5000)))))
+            pairs.append((float(int(max(old_ctx * 3.5, 10000))), float(int(max(new_ctx * 3.5, 10000)))))
+
+    # ── GenAI: truncation rate ────────────────────────────────────────────────
+    old_trunc = old_baseline.get("genai_truncation_rate_pct")
+    if old_trunc is not None and new_baseline.genai_truncation_rate_pct is not None:
+        new_trunc = new_baseline.genai_truncation_rate_pct
+        if old_trunc < 30 and new_trunc < 30:
+            if _drift_pct(old_trunc, new_trunc) >= RETUNE_DRIFT_THRESHOLD:
+                pairs.append((round(max(old_trunc * 2.0, 3.0), 1), round(max(new_trunc * 2.0, 3.0), 1)))
+                pairs.append((round(max(old_trunc * 4.0, 10.0), 1), round(max(new_trunc * 4.0, 10.0), 1)))
+
+    # ── GenAI: tool failure rate ──────────────────────────────────────────────
+    old_tool = old_baseline.get("genai_tool_failure_rate_pct")
+    if old_tool is not None and new_baseline.genai_tool_failure_rate_pct is not None:
+        new_tool = new_baseline.genai_tool_failure_rate_pct
+        if old_tool < 50 and new_tool < 50:
+            if _drift_pct(old_tool, new_tool) >= RETUNE_DRIFT_THRESHOLD:
+                pairs.append((round(min(max(old_tool * 2.0, 15.0), 90.0), 1), round(min(max(new_tool * 2.0, 15.0), 90.0), 1)))
+                pairs.append((round(min(max(old_tool * 3.5, 30.0), 95.0), 1), round(min(max(new_tool * 3.5, 30.0), 95.0), 1)))
 
     return pairs
 

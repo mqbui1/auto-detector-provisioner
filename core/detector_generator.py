@@ -182,6 +182,21 @@ def format_dry_run_report(
         lines.append(f"  Sample count:   {baseline.sample_count}  (σ bands: {w_sig}σ/{c_sig}σ)")
         if not baseline.is_reliable():
             lines.append("  ⚠ Baseline has insufficient samples — using fixed thresholds")
+        # GenAI baseline
+        genai_fields = [
+            ("genai_operation_duration_p99_s", "LLM op p99:     ", "{:.1f}s"),
+            ("genai_input_token_p95",           "Input token p95:", "{:,.0f} tokens"),
+            ("genai_truncation_rate_pct",        "Truncation rate:", "{:.1f}%"),
+            ("genai_tool_failure_rate_pct",      "Tool failure:   ", "{:.1f}%"),
+        ]
+        genai_lines = []
+        for attr, label, fmt in genai_fields:
+            val = getattr(baseline, attr, None)
+            if val is not None:
+                genai_lines.append(f"  {label} {fmt.format(val)}")
+        if genai_lines:
+            lines.append("  --- GenAI ---")
+            lines.extend(genai_lines)
     else:
         lines.append("\nBASELINE: Not available — using fixed best-practice thresholds")
 
