@@ -5,8 +5,8 @@ Automatically discovers services in Splunk Observability Cloud, detects their te
 ## How it works
 
 1. **Discovery** — queries APM and MTS catalog to find all services in an environment
-2. **Stack detection** — infers tech stack (JVM, .NET, Node.js), frameworks (Spring Boot, Django, Express), and libraries (Kafka, Redis, PostgreSQL, gRPC) from metric names and span attributes
-3. **Baseline learning** — observes the service over a configurable window (default 24h) to compute mean, stddev, and percentile thresholds for latency and error rate
+2. **Stack detection** — infers tech stack (JVM, .NET, Node.js, Python, Go, Rust), frameworks (Spring Boot, Django, FastAPI, Express), libraries (Kafka, Redis, PostgreSQL, gRPC), and GenAI/agentic usage from metric names and span attributes
+3. **Baseline learning** — observes the service over a configurable window (default 7 days) to compute mean, stddev, and percentile thresholds for latency, error rate, and GenAI-specific signals
 4. **Detector generation** — matches detected technologies to best-practice detector templates, parameterized with observed baselines where available
 5. **Deployment** — dry-run by default; use `--auto-deploy` to push detectors to Splunk Observability
 
@@ -130,7 +130,7 @@ The 87.88% aggregate error rate is expected for an agentic service — the `Agen
 
 ## Baseline learning
 
-Baselines are computed by running SignalFlow queries against the last 24 hours of live telemetry (configurable via `--baseline-window-hours`).
+Baselines are computed by running SignalFlow queries against the last 7 days of live telemetry (configurable via `--baseline-window-hours`). A longer window produces more stable thresholds — use `--baseline-window-hours 24` for a quicker first run on a new service.
 
 ### Latency baseline
 
@@ -152,26 +152,35 @@ Where `error_count` filters on `sf_error=true` spans over the same window.
 
 ### Threshold derivation
 
+The latency threshold strategy depends on what baseline data is available:
+
+**Primary — percentile-based (preferred):**
+
 | Threshold | Formula |
 |-----------|---------|
-| Warn | `mean + 2 × stddev` |
-| Anomaly / Critical | `mean + 3 × stddev` |
+| Warn | `p99` |
+| Critical | `1.5 × p99` |
 
-For example, a service with mean latency 247ms and stddev 100ms gets: warn at 447ms, anomaly at 547ms.
+This is log-normal safe and directly matches the SLO definition. A service with p99=380ms gets: warn at 380ms, critical at 570ms.
+
+**Fallback — sigma bands (when p99 unavailable):**
+
+Sigma multipliers scale with sample quality to avoid noisy alerts on thin baselines:
+
+| Samples | Warn | Critical |
+|---------|------|----------|
+| 30–99 | `mean + 3.0σ` | `mean + 4.5σ` |
+| 100–499 | `mean + 2.5σ` | `mean + 3.5σ` |
+| 500+ | `mean + 2.0σ` | `mean + 3.0σ` |
 
 ### Dynamic vs Fixed
 
-A baseline is **reliable** when `sample_count ≥ 30`. If there aren't enough samples (new service, low-traffic service), thresholds fall back to fixed industry defaults:
-
-| Signal | Fixed warn | Fixed critical |
-|--------|-----------|----------------|
-| Latency | 1 000ms | 3 000ms |
-| Error rate | 1% | 5% |
+A baseline is **reliable** when `sample_count ≥ 30`. If there aren't enough samples (new service, low-traffic service), thresholds fall back to fixed industry defaults. The provisioner also checks for a similar same-stack service's baseline to bootstrap dynamic thresholds for brand new services.
 
 ### Cache behavior
 
 Baselines are cached in `data/baselines/<env>__<service>.json` and automatically invalidated when:
-- Older than **7 days**
+- Older than **14 days**
 - `sample_count < 100` (indicates a broken or empty learning run)
 
 Use `--skip-baseline` to force fixed thresholds, or delete the cache file to force a re-learn on the next run.
@@ -211,6 +220,9 @@ python3 provision.py --realm us1 --token $TOKEN --environment production --auto-
 # Reconcile — update changed detectors in-place, create missing ones, skip unchanged
 python3 provision.py --realm us1 --token $TOKEN --environment production --reconcile --auto-deploy
 
+# Interactive HTML report — opens in browser with per-detector checkboxes and a Deploy button
+python3 provision.py --realm us1 --token $TOKEN --environment production --html-report report.html
+
 # Use fixed thresholds only (skip baseline learning)
 python3 provision.py --realm us1 --token $TOKEN --environment production --skip-baseline
 
@@ -218,7 +230,16 @@ python3 provision.py --realm us1 --token $TOKEN --environment production --skip-
 python3 provision.py --realm us1 --token $TOKEN --environment production --include-low-confidence
 
 # Use a shorter baseline window
-python3 provision.py --realm us1 --token $TOKEN --environment production --baseline-window-hours 6
+python3 provision.py --realm us1 --token $TOKEN --environment production --baseline-window-hours 24
+
+# Load options from a YAML config file
+python3 provision.py --config provision.yaml
+
+# Show provisioned services and their current status
+python3 provision.py --realm us1 --token $TOKEN --status
+
+# Audit deployed detectors for effectiveness (noisy / never-fired)
+python3 provision.py --realm us1 --token $TOKEN --environment production --audit
 ```
 
 ## Lifecycle management
@@ -229,6 +250,12 @@ python3 provision.py --realm us1 --token $TOKEN --environment production --retun
 
 # Retune and apply changes
 python3 provision.py --realm us1 --token $TOKEN --environment production --retune --auto-deploy
+
+# Retune with a unified diff of SignalFlow changes
+python3 provision.py --realm us1 --token $TOKEN --environment production --diff
+
+# Re-provision all services, ignoring existing state
+python3 provision.py --realm us1 --token $TOKEN --environment production --force-reprovision --auto-deploy
 
 # Mute a service during a 30-minute deployment window
 python3 provision.py --realm us1 --token $TOKEN --environment production --service payment-service --mute 30
@@ -324,6 +351,7 @@ provision.py (CLI entry point)
     ├── core/detector_deployer.py  — Splunk Observability API deployment
     ├── core/state.py              — provisioned state tracking (idempotent reruns)
     ├── core/retune.py             — baseline drift detection + threshold updates
+    ├── core/metric_filter.py      — MTS existence probe (drops ghost detectors)
     ├── core/mute.py               — muting rules (deploy windows, maintenance)
     ├── core/archive.py            — stale service detection + detector cleanup
     ├── core/watch.py              — continuous provisioning daemon
