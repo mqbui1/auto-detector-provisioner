@@ -53,12 +53,10 @@ def _service_still_active(
     token: str,
     service: str,
     environment: str,
-    stale_days: float,
 ) -> bool:
     """
-    Check if a service has emitted spans recently via APM catalog.
-    Returns True if service is still active.
-    Uses the same serviceNames query as discovery._list_apm_services.
+    Confirm a service is still active by checking the live APM catalog.
+    Returns True if the service appears; used as a final guard before archiving.
     """
     body = {
         "operationName": "GetServices",
@@ -91,7 +89,9 @@ def check_stale_services(
     stale_days: float = DEFAULT_STALE_DAYS,
 ) -> list[ServiceState]:
     """
-    Return list of provisioned services that have not been seen in stale_days.
+    Return provisioned services not seen in discovery for stale_days.
+    Uses last_seen_at from state (updated every watch cycle) for the time check,
+    then confirms absence with a live APM catalog query to avoid false positives.
     """
     app_base = f"https://app.{realm}.signalfx.com"
     stale = []
@@ -99,15 +99,15 @@ def check_stale_services(
     for svc_state in state.all_services():
         if svc_state.archived:
             continue
-        active = _service_still_active(
-            app_base, token,
-            svc_state.service, svc_state.environment,
-            stale_days,
-        )
-        if not active:
+        last_seen = svc_state.last_seen_at or svc_state.provisioned_at
+        days_absent = (time.time() - last_seen) / 86400
+        if days_absent < stale_days:
+            continue
+        # Time threshold crossed — confirm with live APM catalog before flagging
+        if not _service_still_active(app_base, token, svc_state.service, svc_state.environment):
             logger.info(
-                "Archive: %s/%s has not been seen in %.0f days — candidate for archival",
-                svc_state.environment, svc_state.service, stale_days,
+                "Archive: %s/%s absent %.0f days (threshold=%.0f) — candidate for archival",
+                svc_state.environment, svc_state.service, days_absent, stale_days,
             )
             stale.append(svc_state)
 

@@ -18,16 +18,14 @@ class DatabaseTemplates:
         detectors = []
 
         # ── DB span latency (APM-based) ───────────────────────────────────────
-        if baseline and baseline.latency_mean_ms and baseline.latency_stddev_ms and baseline.is_reliable():
-            warn_t = round(baseline.latency_mean_ms + 2.0 * baseline.latency_stddev_ms, 1)
-            anomaly_t = round(baseline.latency_mean_ms + 3.0 * baseline.latency_stddev_ms, 1)
-            threshold_type = "dynamic"
-            confidence = "high"
-        else:
-            warn_t = 500    # 500ms
-            anomaly_t = 2000  # 2s
-            threshold_type = "fixed"
-            confidence = "medium"
+        # Use DB-appropriate fixed thresholds — service-level APM latency baselines
+        # (service.request.duration) measure HTTP/gRPC endpoint latency, not DB query
+        # latency. DB client spans should be fast: 50ms warn / 200ms critical covers
+        # OLTP workloads. Tune higher for analytical/reporting queries.
+        warn_t = 50     # 50ms — slow OLTP query
+        anomaly_t = 200  # 200ms — very slow query / connection issue
+        threshold_type = "fixed"
+        confidence = "high"
 
         detectors.append(DetectorTemplate(
             name=f"[{service}] Database query latency high",

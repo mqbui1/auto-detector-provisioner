@@ -1,0 +1,91 @@
+name: Detector Provisioner
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 */6 * * *'   # retune check every 6 hours
+  workflow_dispatch:
+    inputs:
+      force_reprovision:
+        description: 'Re-provision all services (ignore state)'
+        required: false
+        default: 'false'
+        type: boolean
+
+concurrency:
+  group: provision-${{ github.ref }}
+  cancel-in-progress: false    # never cancel a running deploy
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # to commit updated baselines / state
+      pull-requests: write     # to comment dry-run summary on PRs
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install python-dotenv
+
+      - name: Restore baseline cache
+        uses: actions/cache@v4
+        with:
+          path: data/baselines
+          key: baselines-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            baselines-${{ github.ref_name }}-
+            baselines-main-
+
+      - name: Dry run (pull requests)
+        if: github.event_name == 'pull_request'
+        id: dry_run
+        run: |
+          python3 provision.py --config provision.yaml 2>&1 | tee /tmp/dry_run_output.txt
+          echo "output<<EOF" >> $GITHUB_OUTPUT
+          cat /tmp/dry_run_output.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        env:
+          SPLUNK_ACCESS_TOKEN: ${{ secrets.SPLUNK_ACCESS_TOKEN }}
+
+      - name: Comment dry-run results on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const output = `${{ steps.dry_run.outputs.output }}`;
+            const body = `## Detector Provisioner — Dry Run\n\`\`\`\n${output.slice(0, 60000)}\n\`\`\``;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });
+
+      - name: Provision + retune (main / schedule / manual)
+        if: github.event_name != 'pull_request'
+        run: |
+          EXTRA=""
+          if [ "${{ github.event.inputs.force_reprovision }}" = "true" ]; then
+            EXTRA="--force-reprovision"
+          fi
+          python3 provision.py --config provision.yaml --auto-deploy --retune $EXTRA
+        env:
+          SPLUNK_ACCESS_TOKEN: ${{ secrets.SPLUNK_ACCESS_TOKEN }}
+
+      - name: Commit updated state and baselines
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/provisioned_state.json data/baselines/ 2>/dev/null || true
+          git diff --cached --quiet || git commit -m "chore: update provisioner state and baselines [skip ci]"
+          git push

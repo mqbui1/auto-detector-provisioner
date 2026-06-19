@@ -239,7 +239,11 @@ def main() -> int:
                          if svc.last_retune_at else "never")
             det_ids = svc.detector_ids()
             id_preview = ", ".join(det_ids[:4]) + ("…" if len(det_ids) > 4 else "")
-            print(f"\n  {svc.environment}/{svc.service}  [{status_label}]")
+            # Load baseline to show detected stacks
+            b_path = args.baseline_dir / f"{svc.environment}__{svc.service}.json"
+            b = load_baseline(b_path)
+            stacks_str = f"  [{', '.join(b.stacks)}]" if b and b.stacks else ""
+            print(f"\n  {svc.environment}/{svc.service}  [{status_label}]{stacks_str}")
             print(f"    Provisioned:  {prov_dt}")
             print(f"    Last retune:  {retune_dt}")
             print(f"    Baseline:     {svc.baseline_hash or 'none'}")

@@ -539,7 +539,11 @@ def discover_services(
         if not svc_name:
             continue
 
-        if any(p in svc_name.lower() for p in _SYNTHETIC_NAMES):
+        svc_lower = svc_name.lower()
+        if svc_lower in _SYNTHETIC_NAMES or any(
+            svc_lower.startswith(p + "-") or svc_lower.startswith(p + "_")
+            for p in _SYNTHETIC_NAMES
+        ):
             logger.info("Discovery: skipping synthetic service: %s", svc_name)
             continue
 

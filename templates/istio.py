@@ -67,8 +67,9 @@ detect(when(A > 1) and when(A <= 10), lasting="5m").publish("Warning")
 
         # ── Request latency (p99) ─────────────────────────────────────────────
         if baseline and baseline.latency_p99_ms:
-            warn_t = round(baseline.latency_mean_ms + 2.0 * baseline.latency_stddev_ms, 1)
-            anomaly_t = round(baseline.latency_mean_ms + 3.0 * baseline.latency_stddev_ms, 1)
+            w_sigma, c_sigma = baseline.sigma_multipliers()
+            warn_t = round(baseline.latency_mean_ms + w_sigma * baseline.latency_stddev_ms, 1)
+            anomaly_t = round(baseline.latency_mean_ms + c_sigma * baseline.latency_stddev_ms, 1)
             desc = f"Istio sidecar request latency anomaly. Warn: >{warn_t}ms  Anomaly: >{anomaly_t}ms"
             threshold_type = "dynamic"
         else:

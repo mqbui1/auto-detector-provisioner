@@ -86,6 +86,7 @@ class DeployResult:
     success: bool
     detector_id: str | None = None
     error: str | None = None
+    action: str = "created"   # "created" | "updated" | "unchanged" | "dry-run"
 
 
 def _api_get(api_base: str, token: str, path: str, params: dict | None = None) -> dict:
@@ -347,6 +348,7 @@ def deploy_detectors(
                 detector_name=template.name,
                 success=True,
                 detector_id="dry-run",
+                action="dry-run",
             ))
             continue
 
@@ -374,15 +376,22 @@ def deploy_detectors(
                 })
                 detector_id = updated.get("id", existing["id"])
                 logger.info("Updated existing detector: %s (id=%s)", template.name, detector_id)
+                results.append(DeployResult(
+                    detector_name=template.name,
+                    success=True,
+                    detector_id=detector_id,
+                    action="updated",
+                ))
             else:
                 response = _api_post(api_base, token, "/v2/detector", payload)
                 detector_id = response.get("id", "unknown")
                 logger.info("Created detector: %s (id=%s)", template.name, detector_id)
-            results.append(DeployResult(
-                detector_name=template.name,
-                success=True,
-                detector_id=detector_id,
-            ))
+                results.append(DeployResult(
+                    detector_name=template.name,
+                    success=True,
+                    detector_id=detector_id,
+                    action="created",
+                ))
         except RuntimeError as e:
             logger.error("Failed to deploy detector %s: %s", template.name, e)
             results.append(DeployResult(
@@ -399,17 +408,35 @@ def format_deploy_summary(results: list[DeployResult], dry_run: bool) -> str:
     mode = "DRY RUN" if dry_run else "DEPLOYED"
     succeeded = [r for r in results if r.success]
     failed = [r for r in results if not r.success]
+    created = [r for r in succeeded if r.action == "created"]
+    updated = [r for r in succeeded if r.action == "updated"]
+    unchanged = [r for r in succeeded if r.action == "unchanged"]
 
-    lines.append(f"\n{mode} SUMMARY: {len(succeeded)}/{len(results)} detectors {'would be created' if dry_run else 'created'}")
+    if dry_run:
+        lines.append(f"\n{mode} SUMMARY: {len(succeeded)}/{len(results)} detectors would be created/updated")
+    else:
+        parts = []
+        if created:
+            parts.append(f"{len(created)} created")
+        if updated:
+            parts.append(f"{len(updated)} updated")
+        if unchanged:
+            parts.append(f"{len(unchanged)} unchanged")
+        lines.append(f"\n{mode} SUMMARY: " + (", ".join(parts) if parts else f"{len(succeeded)} ok"))
 
     if failed:
         lines.append(f"\nFAILED ({len(failed)}):")
         for r in failed:
             lines.append(f"  ✗ {r.detector_name}: {r.error}")
 
-    if succeeded and not dry_run:
-        lines.append(f"\nCREATED ({len(succeeded)}):")
-        for r in succeeded:
-            lines.append(f"  ✓ {r.detector_name} (id={r.detector_id})")
+    if not dry_run:
+        if created:
+            lines.append(f"\nCREATED ({len(created)}):")
+            for r in created:
+                lines.append(f"  ✓ {r.detector_name} (id={r.detector_id})")
+        if updated:
+            lines.append(f"\nUPDATED ({len(updated)}):")
+            for r in updated:
+                lines.append(f"  ✓ {r.detector_name} (id={r.detector_id})")
 
     return "\n".join(lines)

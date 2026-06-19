@@ -38,7 +38,7 @@ class WatchConfig:
     poll_interval_minutes: int = 60
     retune_interval_days: float = 7.0
     stale_threshold_days: float = 7.0
-    baseline_window_hours: int = 24
+    baseline_window_hours: int = 168
     baseline_dir: Path = Path("data/baselines")
     state_path: Path = STATE_FILE
     auto_archive: bool = False       # archive stale services automatically
