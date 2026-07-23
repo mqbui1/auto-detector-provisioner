@@ -1,5 +1,8 @@
 .env
 data/baselines/
+data/provisioned_state.json
+data/provisioned_state.lock
+report.html
 __pycache__/
 *.pyc
 *.pyo
