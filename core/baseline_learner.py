@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path as _Path  # alias to avoid shadowing field below
 import urllib.error
 import urllib.parse
@@ -163,17 +164,8 @@ def _compute_stats(values: list[float]) -> dict[str, float]:
     return {"mean": mean, "stddev": stddev, "p50": p50, "p95": p95, "p99": p99, "count": n}
 
 
-def _learn_apm_baseline(api_base: str, token: str, service: str, environment: str, window_hours: int) -> dict:
-    """Learn APM latency and error rate baseline via SignalFlow."""
-    now_ms = int(time.time() * 1000)
-    start_ms = now_ms - window_hours * 3600 * 1000
-    env_filter = f'filter("sf_environment", "{environment}") and ' if environment else ""
-
-    svc_filter = f'filter("sf_service", "{service}")'
-    base_filter = f"{env_filter}{svc_filter}"
-
+def _learn_latency_values(api_base: str, token: str, base_filter: str, start_ms: int, now_ms: int) -> list[float]:
     # Latency — try OTel semantic convention first, fall back to Splunk APM metric names
-    latency_values: list[float] = []
     for latency_metric in [
         "service.request.duration",                   # OTel semantic convention (ms)
         "service.request.duration.ns.median",         # Splunk APM (nanoseconds)
@@ -185,12 +177,13 @@ def _learn_apm_baseline(api_base: str, token: str, service: str, environment: st
             # Convert nanoseconds to milliseconds if metric name indicates ns
             if ".ns." in latency_metric:
                 vals = [v / 1_000_000 for v in vals]
-            latency_values = vals
             logger.debug("Baseline: using latency metric %s (%d samples)", latency_metric, len(vals))
-            break
+            return vals
+    return []
 
+
+def _learn_error_values(api_base: str, token: str, base_filter: str, start_ms: int, now_ms: int) -> list[float]:
     # Error rate — try OTel count with error filter, fall back to Splunk APM error metric
-    error_values: list[float] = []
     for err_prog in [
         (f'A = data("service.request.count", filter={base_filter} and filter("sf_error", "true")).sum()\n'
          f'B = data("service.request.count", filter={base_filter}).sum()\n'
@@ -201,17 +194,43 @@ def _learn_apm_baseline(api_base: str, token: str, service: str, environment: st
     ]:
         vals = _execute_signalflow(api_base, token, err_prog, start_ms, now_ms)
         if vals:
-            error_values = vals
-            break
+            return vals
+    return []
 
+
+def _learn_req_values(api_base: str, token: str, base_filter: str, start_ms: int, now_ms: int) -> list[float]:
     # Request rate — average requests per minute; used for request-drop detector
-    req_values: list[float] = []
     for req_metric in ["service.request.count", "spans.count"]:
         prog = f'data("{req_metric}", filter={base_filter}).sum(over="1m").publish()'
         vals = _execute_signalflow(api_base, token, prog, start_ms, now_ms)
         if vals:
-            req_values = vals
-            break
+            return vals
+    return []
+
+
+def _learn_apm_baseline(api_base: str, token: str, service: str, environment: str, window_hours: int) -> dict:
+    """Learn APM latency and error rate baseline via SignalFlow."""
+    now_ms = int(time.time() * 1000)
+    start_ms = now_ms - window_hours * 3600 * 1000
+    env_filter = f'filter("sf_environment", "{environment}") and ' if environment else ""
+
+    svc_filter = f'filter("sf_service", "{service}")'
+    base_filter = f"{env_filter}{svc_filter}"
+
+    # The three groups below are independent SignalFlow queries (each with its own
+    # fallback chain preserved intact) — run them concurrently instead of sequentially.
+    # Confirmed root cause of detector specialist's provision_detectors timeout loop:
+    # this function used to make its 3 (fallback-chain) queries one after another, and
+    # with N services in the environment the cumulative latency routinely exceeded the
+    # 180s subprocess timeout. Same fix pattern as the health-check script's per-detector
+    # parallelization.
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        latency_future = pool.submit(_learn_latency_values, api_base, token, base_filter, start_ms, now_ms)
+        error_future = pool.submit(_learn_error_values, api_base, token, base_filter, start_ms, now_ms)
+        req_future = pool.submit(_learn_req_values, api_base, token, base_filter, start_ms, now_ms)
+        latency_values = latency_future.result()
+        error_values = error_future.result()
+        req_values = req_future.result()
 
     latency_stats = _compute_stats(latency_values)
     error_stats = _compute_stats(error_values)
@@ -234,56 +253,47 @@ def _learn_genai_baseline(api_base: str, token: str, service: str, environment: 
     start_ms = now_ms - window_hours * 3600 * 1000
     env_filter = f'filter("sf_environment", "{environment}") and ' if environment else ""
     f = f"{env_filter}filter(\"sf_service\", \"{service}\")"
+
+    # 5 independent, single-shot SignalFlow queries — run concurrently instead of
+    # sequentially (same fix as _learn_apm_baseline above).
+    queries = {
+        "input_token_p95": (
+            f'data("gen_ai.client.token.usage", filter={f} and filter("gen_ai.token.type", "input")).percentile(pct=95, over="5m").publish()',
+            lambda vals: _compute_stats(vals) if vals and any(v > 0 for v in vals) else None,
+        ),
+        "token_rate": (
+            f'data("gen_ai.client.token.usage", filter={f}).sum(over="1m").publish()',
+            lambda vals: _compute_stats(vals) if vals and any(v > 0 for v in vals) else None,
+        ),
+        "operation_duration_s": (
+            f'data("gen_ai.client.operation.duration", filter={f}).percentile(pct=99, over="5m").publish()',
+            lambda vals: _compute_stats(vals) if vals and any(v > 0 for v in vals) else None,
+        ),
+        "truncation_rate": (
+            f'A = data("gen_ai.client.operation.duration.count", filter={f} and filter("gen_ai.response.finish_reason", "length")).sum()\n'
+            f'B = data("gen_ai.client.operation.duration.count", filter={f}).sum()\n'
+            f'(A / B * 100).publish()',
+            lambda vals: _compute_stats([v for v in vals if 0 <= v <= 100]) if vals else None,
+        ),
+        "tool_failure_rate": (
+            f'A = data("gen_ai.client.operation.duration.count", filter={f} and filter("gen_ai.operation.name", "execute_tool") and filter("error.type", "*")).sum()\n'
+            f'B = data("gen_ai.client.operation.duration.count", filter={f} and filter("gen_ai.operation.name", "execute_tool")).sum()\n'
+            f'(A / B * 100).publish()',
+            lambda vals: _compute_stats([v for v in vals if 0 <= v <= 100]) if vals else None,
+        ),
+    }
+
     result: dict = {}
-
-    # Input token p95 per 5m window — baseline for context window saturation
-    vals = _execute_signalflow(
-        api_base, token,
-        f'data("gen_ai.client.token.usage", filter={f} and filter("gen_ai.token.type", "input")).percentile(pct=95, over="5m").publish()',
-        start_ms, now_ms,
-    )
-    if vals and any(v > 0 for v in vals):
-        result["input_token_p95"] = _compute_stats(vals)
-
-    # Total token rate per minute — baseline for spike detection
-    vals = _execute_signalflow(
-        api_base, token,
-        f'data("gen_ai.client.token.usage", filter={f}).sum(over="1m").publish()',
-        start_ms, now_ms,
-    )
-    if vals and any(v > 0 for v in vals):
-        result["token_rate"] = _compute_stats(vals)
-
-    # LLM operation duration p99 in seconds — direct gen_ai metric, more precise than APM conversion
-    vals = _execute_signalflow(
-        api_base, token,
-        f'data("gen_ai.client.operation.duration", filter={f}).percentile(pct=99, over="5m").publish()',
-        start_ms, now_ms,
-    )
-    if vals and any(v > 0 for v in vals):
-        result["operation_duration_s"] = _compute_stats(vals)
-
-    # Truncation rate (finish_reason=length / total) — percentage per minute
-    vals = _execute_signalflow(
-        api_base, token,
-        (f'A = data("gen_ai.client.operation.duration.count", filter={f} and filter("gen_ai.response.finish_reason", "length")).sum()\n'
-         f'B = data("gen_ai.client.operation.duration.count", filter={f}).sum()\n'
-         f'(A / B * 100).publish()'),
-        start_ms, now_ms,
-    )
-    if vals:
-        result["truncation_rate"] = _compute_stats([v for v in vals if 0 <= v <= 100])
-
-    # Tool failure rate (execute_tool errors / execute_tool total) — percentage per minute
-    vals = _execute_signalflow(
-        api_base, token,
-        (f'A = data("gen_ai.client.operation.duration.count", filter={f} and filter("gen_ai.operation.name", "execute_tool") and filter("error.type", "*")).sum()\n'
-         f'B = data("gen_ai.client.operation.duration.count", filter={f} and filter("gen_ai.operation.name", "execute_tool")).sum()\n'
-         f'(A / B * 100).publish()'),
-        start_ms, now_ms,
-    )
-    if vals:
-        result["tool_failure_rate"] = _compute_stats([v for v in vals if 0 <= v <= 100])
+    with ThreadPoolExecutor(max_workers=len(queries)) as pool:
+        futures = {
+            key: pool.submit(_execute_signalflow, api_base, token, prog, start_ms, now_ms)
+            for key, (prog, _postprocess) in queries.items()
+        }
+        for key, future in futures.items():
+            _prog, postprocess = queries[key]
+            stats = postprocess(future.result())
+            if stats is not None:
+                result[key] = stats
 
     if result:
         keys = list(result.keys())
